@@ -1,0 +1,926 @@
+#!/bin/bash-*-Shell-script-functions*-
+
+###########################################################################
+### Author:  Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
+###
+### Version - 1.0 Mon Nov 16 2020
+###########################################################################
+
+set +u
+
+export MY_COMPILING_SYTEMS="gnu, intel, pgi"
+export MY_COMPONENT_DEFAULT="ogcmdl"
+export MY_COMPONENT_LIST="ogcmdl nuopc"
+
+
+##################################################
+### BEG:: UTILITY FUNCTIONS
+##################################################
+
+###========================================
+### isInteger()
+### Usage:      isInteger var
+### Parameters: var
+### Returns:    1 if var is not an integer (0 is an integer as well)
+###             0 in any other case
+### Echoes:     NONE
+###========================================
+isInteger()
+{
+  local -i retval=1
+
+  [ $# -eq 0 ] && return ${retval}
+
+  if [ "${1:-UNDEF}" -eq "${1}" ] 2>/dev/null
+  then
+    retval=0
+  fi
+
+  return ${retval}
+}
+
+###========================================
+### getInteger()
+### Usage:      getInteger int
+### Parameters: int (int >=0 or, int < 0)
+### Returns:    1 if var is not an integer
+###             0 in any other case
+### Echoes:     int, if it is a valid integer (including 0),
+###             in any other case echoes an empty string
+###========================================
+getInteger()
+{
+  local -i retval=0
+  local echoval= minus=
+
+  # strip spaces, '+' signs and '-' signs
+  # if the first character of the string is '-', set the minus variable
+  echoval="$( echo "${1}" | sed 's/[[:space:]+]//g' )"
+  [ "X$( echo "${echoval:0:1}" )" = "X-" ] && minus="-"
+  echoval="${minus}$( echo "${echoval}" | sed 's/[[:space:]-]//g' )"
+
+  if isInteger ${echoval}; then
+    echoval="$(echo "scale=0; ${echoval} + 0" | bc -ql 2>/dev/null)"
+    retval=$?
+    echoval="${echoval:-0}"
+  else
+    echoval=
+    retval=1
+  fi
+
+  echo -n ${echoval}
+
+  return ${retval}
+}
+
+###========================================
+### getPosInteger()
+### Usage:      getPosInteger posint
+### Parameters: posint (posint >= 0)
+### Returns:    1 if var is not a positive integer
+###             0 in any other case
+### Echoes:     posint if it is a valid positive integer
+###             (including 0), in any other case echoes an
+###             empty string
+###========================================
+getPosInteger()
+{
+  local -i retval=0
+  local echoval=
+
+  echoval=$( getInteger "${1}" )
+  retval=$?
+
+  if [ ${retval} -ne 0 ] ; then
+    echoval=
+    retval=1
+  else
+    if [ ${echoval} -lt 0 ]; then
+      echoval=
+      retval=1
+    fi
+  fi
+
+  echo -n ${echoval}
+
+  return ${retval}
+}
+
+###========================================
+### getYesNo()
+### Usage:      getYesNo value
+### Parameters:
+###   value : The input value (the value of a parameter)
+###           The value of a bash parameter that is checked
+###           against TRUE/FALSE. If the value is one of:
+###             ">=1|y|yes|yea|yeah|yep"
+###           then the value of parameter is TRUE (answer = yes).
+###           If the value is one of:
+###             "<=0|n|no|not|nop|nope"
+###           then the value of parameter is FALSE (answer = no).
+###           If the value is empty then the value of parameter
+###           is FALSE (answer = no)
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : A "yes" or "no" answer.
+###
+### getYesNo: Checks if a parameter is assigned a TRUE/FALSE value.
+###========================================
+getYesNo()
+{
+  local param answer
+  
+  param="$( echo "${1}" | tr '[:upper:]' '[:lower:]' )"
+
+  if [ "${param}" -eq "${param}" ] 2>/dev/null
+  then
+    [ ${param} -le 0 ] && param=0
+    [ ${param} -gt 0 ] && param=1
+  fi
+
+  case "${param}" in
+    1|y|yes|yea|yeah|yep) answer="yes" ;;
+     0|n|no|not|nop|nope) answer="no"  ;;
+                       *) answer=""    ;; # DEFAULT
+  esac
+
+  echo -n "${answer}"
+}
+
+###========================================
+### toUPPER()
+### Usage:      toUPPER string
+### Parameters:
+###   string : The string in to convert
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : The input string converted to an all upper case string
+###
+### toUPPER: Converts a string to an all upper case string
+###========================================
+function toUPPER()
+{
+  echo "${1}" | tr '[:lower:]' '[:upper:]'
+}
+
+###========================================
+### toLOWER()
+### Usage:      toLOWER string
+### Parameters:
+###   string : The string in to convert
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : The input string converted to an all lower case string
+###
+### toLOWER: Converts a string to an all lower case string
+###========================================
+function toLOWER()
+{
+  echo "${1}" | tr '[:upper:]' '[:lower:]'
+}
+
+###========================================
+### strESC()
+### Usage:      strESC string
+### Parameters:
+###   string : The input string
+###            The input string on which this function is applied
+###            to escape special characters used in bash/sed ...
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : The modified string with its special characters escaped
+###
+### strESC: Escapes special characters in a string: "'()/[]*.
+###========================================
+strESC()
+{
+  echo -n "$( echo "${*}" | sed -e "s/[\"\'\(\)\/\*\!]/\\\&/g;s/\[/\\\&/g;s/\]/\\\&/g" )"
+}
+
+strESC1()
+{
+  echo -n "$( echo "${*}" | sed -e "s/[\&\/\*\!]/\\\&/g;s/\[/\\\&/g;s/\]/\\\&/g" )"
+}
+
+###========================================
+### strTrim()
+### Usage:      strTrim s1 flag
+### Parameters:
+###     s1 : The input string
+###   flag : Integer
+###          A value that controls the action of strTrim.
+###          If flag is zero or not present, trailing blanks are removed.
+###          Leading blanks are removed if it is equal to 1.
+###          Both are removed if it is equal to 2.
+###          In any other case, trailing blanks are removed.
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : s1 with all leading and/or trailing
+###           white spaces removed.
+###
+### strTrim: Removes all leading and/or trailing white spaces
+###          from the input string
+###========================================
+function strTrim ()
+{
+  local trimFLG="${2:-0}"
+  local out_str=
+
+  case ${trimFLG} in
+    0) out_str="$(echo "${1}" | sed 's/[[:space:]]*$//')" ;;
+    1) out_str="$(echo "${1}" | sed 's/^[[:space:]]*//')" ;;
+    2) out_str="$(echo "${1}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;;
+    *) out_str="$(echo "${1}" | sed 's/[[:space:]]*$//')" ;;
+  esac
+
+  echo -n ${out_str}
+}
+##################################################
+### END:: UTILITY FUNCTIONS
+##################################################
+
+
+##################################################
+### BEG:: MODELLING SYSTEM BUILD FUNCTIONS
+##################################################
+
+###========================================
+### checkFuncOpt()
+### Usage:      checkFuncOpt opt_name
+### Parameters:
+###   opt_name: The name of the option to a function
+###
+### Returns : Exits on error
+###
+### Exports : __OPTION_LIST
+###
+### Echoes  : NONE
+###
+### checkFuncOpt: Checks if an option to a function is already supplied.
+###========================================
+checkFuncOpt() {
+  local opt_inp opt_list
+
+  [ $# -eq 0 ] && return -1
+
+  opt_inp="$( strTrim "${1}" 2 )"
+  opt_inp="$( echo "${opt_inp}" | sed 's/^[-]*//' )"
+
+  opt_list="$( strTrim "${__OPTION_LIST}" 2 )"
+  [ -n ${opt_list:+1} ] && \
+    opt_list=":$( echo "${opt_list}" | sed 's/ /:/g' ):"
+
+  [ "$( echo "${opt_list}" | egrep -o ":${opt_inp}:" )" ] && return 1
+
+  __OPTION_LIST="${__OPTION_LIST} ${opt_inp}"
+  export __OPTION_LIST
+
+  return 0
+}
+
+###========================================
+### ParseArgs()
+### Usage:      ParseArgs args
+### Parameters: args = the script options
+### Returns:    0
+### Echoes:     NONE
+###
+### Gets the supplied options to the script.
+###========================================
+ParseArgs()
+{
+  local nm_func=$( basename ${BASH_SOURCE[${#BASH_SOURCE[@]}-1]} )
+
+  local opt_all opt_opt opt_arg opt_chk
+
+  local t_VAR
+  local ans0 ans ival intN
+  local all_evars
+
+  all_evars="MY_CLEAN MY_ADD_CMAKE_FLAGS MY_COMPILER MY_COMPONENT
+             MY_PARALLEL MY_PARMAKE MY_INSTALL_DIR MY_TYPE MY_VERBOSE"
+
+  for ival in ${all_evars}; do unset __${ival}; done
+
+
+  __MY_CLEAN=0
+  __MY_ADD_CMAKE_FLAGS=
+  __MY_COMPILER=intel
+  __MY_COMPONENT="${MY_COMPONENT_DEFAULT}" 
+  __MY_PARALLEL=0
+  __MY_PARMAKE=1
+  __MY_INSTALL_DIR=
+  __MY_TYPE=R
+  __MY_VERBOSE=
+          
+
+  # -----
+  # Process the function options
+  opt_all=( c clean cmake_flags compiler component j par parallel prefix t type v verbose
+            h help )
+  opt_all=":$( echo "${opt_all[@]/#/-} ${opt_all[@]/#/--}" | sed 's/ /:/g' ):"
+
+  unset __OPTION_LIST
+  while test $# -gt 0; do
+    case "${1}" in
+      -[^-]*=* | --[^-]*=* )
+        opt_opt="$( toLOWER "$( echo "${1}" | sed 's/=.*//' )" )"
+        len=$(( ${#opt_opt} + 1 ))
+        opt_arg="$( strTrim "$( echo "${1:${len}}" )" 2 )"
+        [ "$( echo "${opt_all}" | egrep -o ":${opt_arg}:" )" ] && \
+          opt_arg=
+        ;;
+      -[^-]* | --[^-]* )
+        opt_opt="$( toLOWER "${1}" )"
+        opt_chk="$( toLOWER "$( echo "${2}" | sed 's/=.*//' )" )"
+        if [ "$( echo "${opt_all}" | egrep -o ":${opt_chk}:" )" ]; then
+          opt_arg=
+        else
+          opt_arg="$( strTrim "$( echo "${2}" )" )"
+        fi
+        ;;
+      *)
+        opt_opt=
+        opt_arg=
+        ;;
+    esac
+
+    case "${opt_opt}" in
+      -c | --c | -clean | --clean )
+          checkFuncOpt "--clean"
+          if [ $? -eq 0 ]; then
+            __MY_CLEAN=1
+            if [ "X${opt_arg}" != "X" ]; then
+              if `isInteger "${opt_arg}"` ; then
+                __MY_CLEAN=$( echo "${opt_arg}" )
+                [ ${opt_arg} -le -1 ] && __MY_CLEAN=-1
+                [ ${opt_arg} -ge  1 ] && __MY_CLEAN=1
+              else
+                __MY_CLEAN=0
+                [ "$( getYesNo "${opt_arg}" )" = "yes" ] && __MY_CLEAN=1
+              fi
+            fi
+          fi
+        ;;
+      -cmake_flags | --cmake_flags )
+          checkFuncOpt "--cmake_flags"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_ADD_CMAKE_FLAGS="$( echo "${opt_arg}" )"
+            fi
+          fi
+        ;;
+      -compiler | --compiler )
+          checkFuncOpt "--compiler"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_COMPILER="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+              __MY_COMPILER="$( toLOWER ${__MY_COMPILER} )"
+            fi
+          fi
+        ;;
+      -component | --component )
+          checkFuncOpt "--component"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_COMPONENT="$( strTrim "${opt_arg}" )"
+            fi
+          fi
+        ;;
+      -j | --j )
+          checkFuncOpt "--j"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_PARMAKE=1
+              t_VAR="$( getPosInteger "${opt_arg}" )"
+              [ ! -z "${t_VAR}" ] && __MY_PARMAKE=${t_VAR}
+            fi
+          fi
+        ;;
+      -par | --par | -parallel | --parallel )
+          checkFuncOpt "--parallel"
+          if [ $? -eq 0 ]; then
+            __MY_PARALLEL=1
+            if [ "X${opt_arg}" != "X" ]; then
+              if `isInteger "${opt_arg}"` ; then
+                __MY_PARALLEL=0
+                [ ${opt_arg} -ge 1 ] && __MY_PARALLEL=1
+              else
+                __MY_PARALLEL=0
+                [ "$( getYesNo "${opt_arg}" )" = "yes" ] && __MY_PARALLEL=1
+              fi
+            fi
+          fi
+        ;;
+      -prefix | --prefix )
+          checkFuncOpt "--prefix"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_INSTALL_DIR="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+            fi
+          fi
+        ;;
+      -t | --t | -type | --type )
+          checkFuncOpt "--type"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_TYPE="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+              __MY_TYPE="$( toUPPER ${__MY_TYPE} )"
+            fi
+          fi
+        ;;
+      -v | --v | -verbose | --verbose )
+          checkFuncOpt "--verbose"
+          if [ $? -eq 0 ]; then
+            __MY_VERBOSE=
+            if [ "X${opt_arg}" != "X" ]; then
+            __MY_VERBOSE="$( echo "$( strTrim "${opt_arg}" 2 )" | sed 's/[[:space:]]/,/g' )"
+            fi
+          fi
+        ;;
+      -h | -help | --h | --help )
+          UsageBuild ${nm_func}
+        ;;
+      *) ;; # DEFAULT
+    esac
+    shift
+    opt_opt= 
+    opt_arg=
+  done
+  unset __OPTION_LIST
+  # -----
+
+  case "${__MY_TYPE}" in
+     "D") ;; # Do nothing
+     "R") ;; # Do nothing
+    "RD") ;; # Do nothing
+    "MR") ;; # Do nothing
+    *) echo "Wrong CMake type ${__MY_TYPE}, should be one of [D, R, RD, MR]"
+       exit 1
+       ;;
+  esac
+
+  # Export the values of all __* variables.
+  for ival in ${all_evars}
+  do
+    ans0="$( eval "echo \${$(echo ${ival}):-}" )"
+    ans="$( eval "echo \${$(echo __${ival}):-}" )"
+    ans=${ans:-${ans0:-}}
+
+    eval "${ival}=\${ans}"
+    export ${ival}
+
+    unset __${ival}
+  done
+
+  return 0
+}
+
+###========================================
+### UsageBuild()
+###
+### Usage:      UsageBuild
+###
+### Parameters: NONE
+###
+### Returns : Exits on error
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### UsageBuild: Prints all usage options of the build script.
+###========================================
+UsageBuild()
+{
+  local nm="$( basename ${0} )"
+
+  echo
+  echo "Usage: \"${nm}\" [{-|--}option1{=|space}[option_value1]] [{-|--}option2{=|space}[option_value2]] ..."
+  echo
+
+  echo "  -h|-help|--h|--help"
+  echo "    Show this help screen."
+  echo
+  #---
+  echo "  -c|--c|-clean|--clean [=|space] \"0|1|2|-3|-2|-1|yes|no\" (OPTIONAL)."
+  echo "    Only clean the already compiled CMake build system."
+  echo "    Default: 0|no."
+  echo "    Example: --clean=1   Clean the system (make clean) and exit."
+  echo "                    =-1  During the compilation stage, clean the system (make clean)"
+  echo "                         and continue with the compilation."
+  echo "                    =0   Do not clean anything (default)."
+  echo
+  #---
+  echo "  -cmake_flags|--cmake_flags [=|space] \"cmake_flags\" (OPTIONAL)."
+  echo "    Additional flags to pass to the cmake program."
+  echo "    Example: --cmake_flags=\"-DFLAG1=VAL1 -DFLAG2=VAL2 ...\"."
+  echo "    Default: none."
+  echo
+  #---
+  echo "  -compiler|--compiler [=|space] \"compiling_system\" (OPTIONAL)."
+  echo "    The compiling system to use (${MY_COMPILING_SYTEMS})."
+  echo "    Default: none."
+  echo
+  #---
+  echo "  -component|--component [=|space] \"component_list\" (OPTIONAL)."
+  echo "    The component(s) to use (${MY_COMPONENT_LIST})."
+  echo "    Default: \"${MY_COMPONENT_DEFAULT}\"."
+  echo
+  #---
+  echo "  -j|--j [=|space] \"N\" (OPTIONAL)."
+  echo "    Define the number of make jobs to run simultaneously."
+  echo "    Default: 1."
+  echo
+  #---
+  echo "  -par|--par|-parallel|--parallel [=|space] \"0|1|yes|no\" (OPTIONAL)."
+  echo "    Activate the use of parallel compilers."
+  echo "    Default: 0|no."
+  echo
+  #---
+  echo "  -prefix|--prefix [=|space] \"install_dir\" (OPTIONAL)."
+  echo "    The path to the installation directory."
+  echo "    Default: The location of this script."
+  echo
+  #---
+  echo "  -t|--t|-type|--type [=|space] \"cmake_build_type\" (OPTIONAL)."
+  echo "    To set the CMAKE_BUILD_TYPE option (Debug Release RelWithDebInfo MinSizeRel)."
+  echo "       D = Debug."
+  echo "       R = Release."
+  echo "      RD = RelWithDebInfo."
+  echo "      MR = MinSizeRel."
+  echo "    Default: R."
+  echo
+  #---
+  echo "  -v|--v|-verbose|--verbose [=|space] \"0|1|yes|no\" (OPTIONAL)."
+  echo "    Enable verbosity in the make files during compilation."
+  echo "    Default: 0|no."
+  echo
+  #---
+
+  exit 0
+}
+
+###========================================
+### getCompilerNames()
+###
+### Usage:      getCompilerNames compile_family
+###
+### Parameters: compile_family = one of: gnu, intel, pgi
+###
+### Returns : error status
+###
+### Exports : CC CXX FC F90 PCC PCXX PFC PF90
+###
+### Echoes  : NONE
+###
+### getCompilerNames: Exports the compiler names for a compiler family.
+###========================================
+ getCompilerNames() {
+  local cmp_family
+  local err=0
+
+  [ $# -eq 0 ] && return ${err}
+
+  cmp_family="$( toLOWER "${1}" )"
+
+  case "${cmp_family}" in
+    gnu)
+       CC=gcc
+       CXX=g++
+       FC=gfortran
+       F90=gfortran
+       PCC=${PCC:-mpicc}
+       PCXX=${PCXX:-mpicxx}
+       PFC=${PFC:-mpif90}
+       PF90=${PF90:-${PFC}}
+       ;;
+    intel)
+       CC=icc
+       CXX=icpc
+       FC=ifort
+       F90=ifort
+       PCC=${PCC:-mpiicc}
+       PCXX=${PCXX:-mpiicpc}
+       PFC=${PFC:-mpiifort}
+       PF90=${PF90:-${PFC}}
+       ;;
+    pgi)
+       CC=pgcc
+       CXX=pgc++
+       FC=pgfortran
+       F90=pgfortran
+       PCC=${PCC:-pgcc}
+       PCXX=${PCXX:-pgc++}
+       PFC==${PFC:-pgfortran}
+       PF90=${PF90:-${PFC}}
+       ;;
+    *) # No defaults. Give the user the option to define the environment variables
+       # CC, CXX, FC, F90 before running this script.
+       #echo "WARNING: The supplied compiling system \"${COMPILER}\", is not suported."
+       #echo "         Supported systems are anyone of: compiling_system=[${MY_COMPILING_SYTEMS}]"
+       #echo "         Use: --compiler=compiling_system."
+       #echo "         Will continue with OS defaults."
+       CC=${CC:-}
+       CXX=${CXX:-}
+       FC=${FC:-}
+       F90=${F90:-}
+       PCC=${CC:-}
+       PCXX=${CXX:-}
+       PFC=${FC:-}
+       PF90=${F90:-}
+
+       err=1
+       ;;
+  esac
+
+  export CC CXX FC F90 PCC PCXX PFC PF90
+
+  return ${err}
+}
+
+###========================================
+### getEnvVars()
+###
+### Usage:      getEnvVars
+###
+### Parameters: NONE
+###
+### Returns : error status
+###
+### Exports : CLEAN ADD_CMAKE_FLAGS COMPILER COMPONENT PARALLEL PARMAKE
+###           INSTALL_DIR TYPE VERBOSE
+###
+### Echoes  : NONE
+###
+### getEnvVars: Exports all the environment variables required by the build script.
+###========================================
+ getEnvVars() {
+  local src_name src_dir component_ww3
+
+  if [ -n "${APP_DIR:+1}" ]; then
+    src_dir="${APP_DIR}"
+  else
+    if [ -n "${1:+1}" ]; then
+      src_dir="${1}"
+    else
+      # Get the directory where the script is located
+      if [[ $(uname -s) == Darwin ]]; then
+        readonly src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        readonly src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+      else
+        readonly src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        readonly src_dir="$(cd "$(dirname "$(realpath -s "${BASH_SOURCE[0]}")" )" && pwd -P)"
+      fi
+    fi
+  fi
+
+  CLEAN=${MY_CLEAN:-0}
+  export CLEAN
+
+  ADD_CMAKE_FLAGS=${MY_ADD_CMAKE_FLAGS}
+  export ADD_CMAKE_FLAGS
+
+  COMPILER="$( toLOWER "$( basename "${MY_COMPILER}" )" )"
+  export COMPILER
+
+  COMPONENT="$( toUPPER "${MY_COMPONENT}" )"
+  export COMPONENT
+
+  PARALLEL=${MY_PARALLEL:-1}
+  export PARALLEL
+
+  if [ "${MY_PARMAKE:0}" -gt 1 ]; then
+    PARMAKE="${MY_PARMAKE}"
+  else
+    PARMAKE=
+  fi
+  export PARMAKE
+
+  INSTALL_DIR=${MY_INSTALL_DIR:-}
+  export INSTALL_DIR
+
+  VERBOSE="$( toLOWER "${MY_VERBOSE}" )"
+  export VERBOSE
+
+  # Get the CMake build type
+  TYPE="$( toUPPER "${MY_TYPE:-R}" )"
+  export TYPE
+
+  case "${TYPE}" in
+     D) export OPT_TYPE="Debug"          ;;
+     R) export OPT_TYPE="Release"        ;;
+    RD) export OPT_TYPE="RelWithDebInfo" ;;
+    RD) export OPT_TYPE="MinSizeRel"     ;;
+     *) export OPT_TYPE="Release"        ;;
+  esac
+}
+
+###========================================
+### checkComponents()
+###
+### Usage:      checkComponents
+###
+### Parameters: NONE
+###
+### Returns : Exits on error
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### checkComponents: Checks if a user supplied modeling component is supported.
+###========================================
+ checkComponents() {
+  local comp_user comp_all
+  local icomp
+
+  comp_user="$( toUPPER "${COMPONENT}" )"
+  [ -z "${comp_user}" ] && \
+    comp_user="$( toUPPER "${MY_COMPONENT}" )"
+
+  comp_all="$( toUPPER "${MY_COMPONENT_LIST}" )"
+
+  for icomp in ${comp_user}
+  do
+    if [[ "${comp_all}" != *"${icomp}"* ]]; then
+      echo "The modeling component \"${icomp}\" is not supported."
+      echo "Please adjust your component list and re-run the script."
+      echo "Exiting ..."
+      exit 1
+      echo "icomp = ${icomp}"
+    fi
+  done
+}
+
+###========================================
+### compileNUOPC()
+###
+### Usage:      compileNUOPC compile_type
+###
+### Parameters: compile_type = one of: clean|distclean or, build|compile
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileNUOPC: Uses environment variables to compile a NUOPC application.
+###========================================
+compileNUOPC() {
+  local cmp_type cmp_make cmp_mjob
+  local err=0
+
+  local prog_dir="nuopc"
+
+  [ $# -eq 0 ] && return ${err}
+
+  cmp_type="$( toLOWER "${1}" )"
+  cmp_make=Makefile   # This is the top level NUOPC Makefile
+  cmp_mjob="${PARMAKE:+-j ${PARMAKE}}"
+  cmp_verb="${VERBOSE:+--debug=${VERBOSE}}"
+
+  case "${cmp_type}" in
+    "clean"|"distclean" )
+      if [ -e "${prog_dir}/${cmp_make}" ]; then
+        pushd ${prog_dir} >/dev/null 2>&1
+          echo "compileNUOPC :: Cleaning: in ${prog_dir}"
+          eval "make ${cmp_verb} -f ${cmp_make} ${cmp_type}"
+          err=$?
+        popd >/dev/null 2>&1
+      fi
+      ;;
+    "build"|"compile" )
+      if [ -e "${prog_dir}/${cmp_make}" ]; then
+        pushd ${prog_dir} >/dev/null 2>&1
+          eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make} clean"
+          err=$?
+          eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make}"
+          err=$?
+        popd >/dev/null 2>&1
+        if [ ${err} -eq 0 ]; then
+          echo "compileNUOPC :: Compiling: the compilation in ${prog_dir} was successeful"
+        else
+          echo "compileNUOPC :: Compiling: the compilation in ${prog_dir} failed"
+        fi
+      else
+        echo "compileNUOPC :: Compiling: no ${cmp_make} found: ${cmp_make} = ${cmp_make}"
+        err=1
+      fi
+      ;;
+    * ) err=0 ;; # Do nothing
+  esac
+
+  return ${err}
+}
+
+###========================================
+### compileOGCMDL()
+###
+### Usage:      compileOGCMDL compile_type
+###
+### Parameters: compile_type = one of: clean|distclean or, build|compile
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileOGCMDL: Uses environment variables to compile a OGCMDL application.
+###========================================
+compileOGCMDL() {
+  local cmp_type cmp_make cmp_mjob
+  local err=0
+
+  local prog_lib_dirs="datetime-fortran GSW-Fortran"
+  local prog_dir="OC-GTSM"
+
+
+  [ $# -eq 0 ] && return ${err}
+
+  cmp_type="$( toLOWER "${1}" )"
+  cmp_make=Makefile
+  cmp_mjob="${PARMAKE:+-j ${PARMAKE}}"
+  cmp_verb="${VERBOSE:+--debug=${VERBOSE}}"
+
+  case "${cmp_type}" in
+    "clean"|"distclean" )
+      # This part is for the libraries that use CMake
+      for idir in ${prog_lib_dirs}
+      do
+        if [ -d "${idir}/build" ]; then
+          echo "compileOGCMDL :: Cleaning: removing ${idir}/build"
+          rm -rf ${idir}/build
+          err=$?
+        else
+          echo "compileOGCMDL :: Cleaning: ${idir} is clean"
+          err=0
+        fi
+      done
+      # This part is for the "ogcmdl" program
+      if [ -e "${prog_dir}/${cmp_make}" ]; then
+        pushd ${prog_dir} >/dev/null 2>&1
+          echo "compileOGCMDL :: Cleaning: in ${prog_dir}"
+          eval "make ${cmp_verb} -f ${cmp_make} ${cmp_type}"
+          err=$?
+        popd >/dev/null 2>&1
+      fi
+      ;;
+    "build"|"compile" )
+      # This part is for the libraries that use CMake
+      for idir in ${prog_lib_dirs}
+      do
+        if [ -d "${idir}" ]; then
+          [ -f ${idir}/build/CMakeCache.txt ] && \
+            rm -f ${idir}/build/CMakeCache.txt
+
+          eval "cmake -S ${idir} -B ${idir}/build ${CMAKE_FLAGS}"
+          err=$?
+          if [ ${err} -eq 0 ]; then
+            eval "cmake --build ${idir}/build"
+            err=$?
+          fi
+        fi
+        if [ ${err} -eq 0 ]; then
+          echo "compileOGCMDL :: Compile: the compilation in ${idir} was successeful"
+        else
+          echo "compileOGCMDL :: Compile: the compilation in ${idir} failed (see error log)"
+        fi
+      done
+      # This part is for the "ogcmdl" program
+      if [ -e "${prog_dir}/${cmp_make}" ]; then
+        pushd ${prog_dir} >/dev/null 2>&1
+          eval "make ${cmp_verb} -f ${cmp_make} clean"
+          err=$?
+          eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make} F90=${PF90}" # We require a parallel compiler here
+          err=$?
+        popd >/dev/null 2>&1
+      fi
+      if [ ${err} -eq 0 ]; then
+        echo "compileOGCMDL :: Compile: the compilation in ${prog_dir} was successeful"
+      else
+        echo "compileOGCMDL :: Compile: the compilation in ${prog_dir} failed"
+      fi
+      ;;
+    * ) err=0 ;; # Do nothing
+  esac
+
+  return ${err}
+}
