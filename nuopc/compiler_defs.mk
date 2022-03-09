@@ -1,5 +1,5 @@
 ###########################################################################
-## GNU Makefile for OC-GTSM
+## GNU Makefile for NUOPC
 ##
 ##!> @author Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
 ##!>
@@ -85,42 +85,17 @@ else
 endif
 
 
-# ############################
-# ###### For DATETIME    #####
-# ############################
-# ifneq ($(origin DATETIMEHOME), environment)
-#   DATETIMEHOME := ../datetime-fortran/build
-# endif
+############################
+###### For ESMF        #####
+############################
+ifneq ($(origin ESMFMKFILE), environment)
+  $(error No ESMFMKFILE environment variable found. Please set ESMFMKFILE before running this Makefile)
+else
+  include $(ESMFMKFILE)
+endif
 
-# ifeq ($(wildcard $(DATETIMEHOME)),)
-#   $(error The essential datetime-fortran directory $(DATETIMEHOME) was not found.)
-# else
-#   INCDIRS += -I$(DATETIMEHOME)/include
-#   LIBDIRS += -L$(DATETIMEHOME)/lib
-#   LIBS    += -ldatetime
-# endif
-
-
-# ############################
-# ###### For GSW-Fortran #####
-# ############################
-# ifneq ($(origin GSWHOME), environment)
-#   GSWHOME := ../GSW-Fortran/build
-# endif
-
-# ifeq ($(wildcard $(GSWHOME)),)
-#   $(error The essential GSW-Fortran directory $(GSWHOME) was not found.)
-# else
-#   INCDIRS += -I$(GSWHOME)/gsw
-#   LIBDIRS += -L$(GSWHOME)
-#   LIBS    += -lgsw
-# endif
+#INCDIRS += -I.
+#LIBDIRS += -L.
 
 ################################################################################
 
-# We need a parallel compiler here
-F90 ?=  mpif90
-
-FCFLAGS ?= -g -O2 -ffree-line-length-none -fbacktrace #-g -check bounds 
-
-LDFLAGS ?= -O2 $(LIBDIRS) $(LIBS)

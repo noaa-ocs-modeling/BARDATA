@@ -10,34 +10,28 @@ SHELL := /bin/bash
 
 clist := clean distclean
 ifeq (,$(filter $(clist), $(MAKECMDGOALS)))
-  ###########################################################################
-  # Mandatory environment variables NETCDFHOME, ESMFMKFILE and possibly PAHM_BINDIR
-  ifneq ($(origin NETCDFHOME), environment)
-    $(error Environment variable NETCDFHOME was not set)
-  endif
-  #-----
-  ifneq ($(origin ESMFMKFILE), environment)
-    $(error Environment variable ESMFMKFILE was not set)
-  endif
-  #-----
-
-  include $(ESMFMKFILE)
-
-  INCDIRS += -I${NETCDFHOME}/include
-  LIBDIRS += -L${NETCDFHOME}/lib
-
-  ifneq ($(origin HDF5HOME), environment)
-    INCDIRS += -I${HDF5HOME}/include   
-    LIBDIRS += -L${HDF5HOME}/lib
-  endif
-
-  INCDIRS += -I.
-  LIBDIRS += -L.
-
-  # For reference only
-  LIBS   :=  -lnetcdf  -lnetcdff -lhdf5 -lhdf5_fortran
-  ################################################################################
+  include compiler_defs.mk
 endif
+
+
+PWDDIR := $(shell pwd)
+
+# Coming from NEMS/src/incmake/component_BARDATA.mk (option for this Makefile)
+INSTALLDIR := $(INSTDIR)
+ifeq ($(wildcard $(INSTALLDIR)),)
+  $(error INSTDIR is not a valid directory. Please define INSTDIR prior running this Makefile)
+endif
+
+MAKEFILE   := bardata.mk
+
+LIBRARY    := libbardata_cap.a
+
+MODULES    := bardata.o bardata_mod.o 
+
+
+########################################
+### BEG:: Compilation Rules
+########################################
 
 .SUFFIXES: .f90 .F90 .c .C
 
@@ -55,28 +49,10 @@ endif
 
 .PRECIOUS: %.o
 
-# -----------------------------------------------------------------------------
-vars:
-	@echo " >>>>>>>>>>>>>>>> vars >>>>>>>>>>>>>>"
-	@echo "INCDIRS $(INCDIRS)"
-	@echo "LIBDIRS $(LIBDIRS)"
-	@echo "ESMF_F90COMPILER $(ESMF_F90COMPILER)"
-	@echo "ESMF_F90LINKER $(ESMF_F90LINKER)"
-	@echo "ESMF_F90LINKOPTS $(ESMF_F90LINKOPTS)"
-	@echo "ESMF_F90LINKPATHS  $(ESMF_F90LINKPATHS)"
-	@echo "ESMF_F90LINKRPATHS $(ESMF_F90LINKRPATHS)"
-	@echo "ESMF_F90ESMFLINKLIBS $(ESMF_F90ESMFLINKLIBS)"	
+########################################
+### END:: Compilation Rules
+########################################
 
-# -----------------------------------------------------------------------------
-
-PWDDIR := $(shell pwd)
-INSTALLDIR := $(INSTDIR)    # coming from NEMS/src/incmake/component_BARDATA.mk
-
-MAKEFILE = bardata.mk
-
-LIBRARY  = libbardata_cap.a
-
-MODULES  = bardata.o bardata_mod.o 
 
 nuopc: $(LIBRARY) 
 
@@ -101,10 +77,27 @@ install: $(LIBRARY)
 	cp -f *.a *.mod $(strip $(INSTALLDIR)) 
 	@echo ""
 
-# module dependencies:
+# -----------------------------------------------------------------------------
+vars:
+	@echo " >>>>>>>>>>>>>>>> vars >>>>>>>>>>>>>>"
+	@echo "INCDIRS $(INCDIRS)"
+	@echo "LIBDIRS $(LIBDIRS)"
+	@echo "ESMF_F90COMPILER $(ESMF_F90COMPILER)"
+	@echo "ESMF_F90LINKER $(ESMF_F90LINKER)"
+	@echo "ESMF_F90LINKOPTS $(ESMF_F90LINKOPTS)"
+	@echo "ESMF_F90LINKPATHS  $(ESMF_F90LINKPATHS)"
+	@echo "ESMF_F90LINKRPATHS $(ESMF_F90LINKRPATHS)"
+	@echo "ESMF_F90ESMFLINKLIBS $(ESMF_F90ESMFLINKLIBS)"	
+# -----------------------------------------------------------------------------
+
+### Module Dependencies:
 bardata.o:   bardata_mod.o 
 
-# -----------------------------------------------------------------------------
+
+########################################
+### BEG:: Miscellaneous Rules
+########################################
+
 .PHONY: clean distclean
 
 clean:
@@ -113,3 +106,7 @@ clean:
 
 distclean: clean
 	@rm -v -f $(LIBRARY)
+
+########################################
+### END:: Miscellaneous Rules
+########################################
