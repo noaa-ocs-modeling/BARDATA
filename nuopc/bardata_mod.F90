@@ -1,5 +1,5 @@
 !----------------------------------------------------------------
-!               M O D U L E   B A R D A T
+!               M O D U L E   B A R D A T _ M O D
 !----------------------------------------------------------------
 !> @file bardat_mod.F90
 !>
@@ -25,8 +25,8 @@ MODULE Bardat_Mod
 
   !use MESH   , only: np,ne,nm,slam,sfea
   !use GLOBAL , only: IMAP_EL_LG,NODES_LG
-  !use GLOBAL , only: ETA2, UU2, VV2  ! Export water level and velocity fileds to atmesh model
-  !USE GLOBAL,  ONLY: RSNX2, RSNY2    ! Import atmesh 2D forces from atmesh model
+  !use GLOBAL , only: ETA2, UU2, VV2  ! Export water level and velocity fileds to bardata model
+  !USE GLOBAL,  ONLY: RSNX2, RSNY2    ! Import bardata 2D forces from bardata model
   !use SIZES  , only: ROOTDIR
 
 
@@ -37,7 +37,7 @@ MODULE Bardat_Mod
     character (len = 280) :: FILE_NAME
     character (len =2048) :: info
      
-    ! info for reading atmesh netcdf file
+    ! info for reading bardata netcdf file
     integer               :: nnode,nelem , ntime, noel
     real(ESMF_KIND_R8), allocatable     :: LONS(:), LATS(:),TIMES(:)
     integer           , allocatable     :: TRI(:,:)
@@ -111,7 +111,7 @@ MODULE Bardat_Mod
 !-----------------------------------------------------------------------
 !- Sub !!!????
 !-----------------------------------------------------------------------
-    SUBROUTINE init_atmesh_nc()
+    SUBROUTINE init_bardata_nc()
       IMPLICIT NONE
       character (len = *), parameter :: NOD_NAME    = "node"
       character (len = *), parameter :: NOE_NAME    = "noel"
@@ -125,7 +125,7 @@ MODULE Bardat_Mod
       character (len = *), parameter :: TRI_NAME    = "tri"
 
       character (len = 140)          :: units
-      character(len=*),parameter :: subname='(atmesh_mod:init_atmesh_nc)'
+      character(len=*),parameter :: subname='(bardata_mod:init_bardata_nc)'
 
 
       logical :: THERE
@@ -135,7 +135,7 @@ MODULE Bardat_Mod
       FILE_NAME =  TRIM(bar_dir)//'/'//TRIM(bar_nam)
       print *, ' FILE_NAME  > ', FILE_NAME
       INQUIRE( FILE= FILE_NAME, EXIST=THERE )
-      if ( .not. THERE)  stop 'ATMESH netcdf grdfile does not exist!'
+      if ( .not. THERE)  stop 'BARDATA netcdf grdfile does not exist!'
 
       ncid = 0
       ! Open the file.
@@ -188,7 +188,7 @@ MODULE Bardat_Mod
       !    print *,  "TRI", TRI(1,num), TRI(2,num), TRI(3,num)
       !end do
       
-      write(info,*) subname,' --- init atmesh netcdf file  --- '
+      write(info,*) subname,' --- init bardata netcdf file  --- '
       !print *, info
       call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
 
@@ -197,7 +197,7 @@ MODULE Bardat_Mod
 !-----------------------------------------------------------------------
 !- Sub !!!????
 !-----------------------------------------------------------------------
-    SUBROUTINE read_atmesh_nc(currTime)
+    SUBROUTINE read_bardata_nc(currTime)
       IMPLICIT NONE
       type(ESMF_Time),intent(in)     :: currTime
       type(ESMF_Time)                :: refTime
@@ -205,7 +205,7 @@ MODULE Bardat_Mod
 
 
       character (len = 140)          :: units
-      character(len=*),parameter :: subname='(atmesh_mod:read_atmesh_nc)'
+      character(len=*),parameter :: subname='(bardata_mod:read_bardata_nc)'
       integer, parameter :: NDIMS = 2
       integer    :: start(NDIMS),count(NDIMS)
       logical    :: THERE
@@ -226,7 +226,7 @@ MODULE Bardat_Mod
 
       if (iret .ne. 0) then
         print *, 'Fatal error: A non valid time units string was provided'
-        stop 'atmesh_mod: read_atmesh_nc'
+        stop 'bardata_mod: read_bardata_nc'
       end if
 
       call ESMF_TimeSet(refTime, yy=yy, mm=mm, dd=dd, h=hh, m=min, s=ss, rc=rc)
@@ -252,26 +252,26 @@ MODULE Bardat_Mod
       it = minloc(abs(delta_d_all),dim=1)
 
       if (abs(delta_d_all (it)) .gt. 7200.) then
-         write(info,*) subname,' --- STOP ATMesh: Time dif is GT 2 hours ---  '
+         write(info,*) subname,' --- STOP BARData: Time dif is GT 2 hours ---  '
          call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
-         stop                  ' --- STOP ATMesh: Time dif is GT 2 hours ---  '
+         stop                  ' --- STOP BARData: Time dif is GT 2 hours ---  '
       endif
 
       !it = 1
-      !print *, 'atmesh file it index > ',it
+      !print *, 'bardata file it index > ',it
 
-      write(info,*) subname,'atmesh file it index > ',it
+      write(info,*) subname,'bardata file it index > ',it
       !print *, info
       call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
 
       
-      call ESMF_TimePrint(refTime, preString="ATMESH refTime=  ", rc=rc)
+      call ESMF_TimePrint(refTime, preString="BARDATA refTime=  ", rc=rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__, &
         file=__FILE__)) &
         return  ! bail out
       
-      !write(info,*) ' Read ATMesh netcdf:',it, 
+      !write(info,*) ' Read BARData netcdf:',it, 
       !call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
 
 
@@ -289,8 +289,8 @@ MODULE Bardat_Mod
       call check( nf90_get_var(ncid,VWND_varid, VWND, start, count) )
       call check( nf90_get_var(ncid,PRES_varid, PRES, start, count) )
 
-      !print *,FILE_NAME , '   HARD CODED for NOWWWW>>>>>     Time index from atmesh file is > ', it, UWND(1:10,1)
-      write(info,*) subname,' --- read ATMesh netcdf file  --- '
+      !print *,FILE_NAME , '   HARD CODED for NOWWWW>>>>>     Time index from bardata file is > ', it, UWND(1:10,1)
+      write(info,*) subname,' --- read BARData netcdf file  --- '
       !print *, info
       call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
 
@@ -468,7 +468,7 @@ MODULE Bardat_Mod
 
     call ESMF_ConfigGetAttribute(cf, bar_dir, label="bar_dir:",default='bar_inp/'  , rc=rc)
     call ESMF_ConfigGetAttribute(cf, bar_nam, label="bar_nam:", &
-         default='atmesh.Constant.YYYYMMDD_sxy.nc'  , rc=rc)
+         default='bardata.Constant.YYYYMMDD_sxy.nc'  , rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &

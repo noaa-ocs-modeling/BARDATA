@@ -26,7 +26,7 @@ MAKEFILE   := bardata.mk
 
 LIBRARY    := libbardata_cap.a
 
-MODULES    := bardata.o bardata_mod.o 
+MODULES    := bardata_cap.o bardata_mod.o 
 
 
 ########################################

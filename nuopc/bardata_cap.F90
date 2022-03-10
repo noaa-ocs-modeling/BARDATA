@@ -8,10 +8,10 @@
 !
 !
 
-module ATMESH
+module BARDATA
 
   !-----------------------------------------------------------------------------
-  ! ATMESH Component.
+  ! BARDATA Component.
   !-----------------------------------------------------------------------------
   use mpi
   use ESMF
@@ -23,15 +23,15 @@ module ATMESH
     model_label_CheckImport => label_CheckImport, &    
     model_label_Finalize  => label_Finalize
 
-  use atmesh_mod, only: meshdata
-  use atmesh_mod, only: create_parallel_esmf_mesh_from_meshdata
-  !use atmesh_mod, only: atm_int,atm_num,atm_den
-  use atmesh_mod, only: UWND, VWND, PRES
-  use atmesh_mod, only: read_config
+  use Bardat_Mod, only: meshdata
+  use Bardat_Mod, only: create_parallel_esmf_mesh_from_meshdata
+  !use Bardat_Mod, only: atm_int,atm_num,atm_den
+  use Bardat_Mod, only: UWND, VWND, PRES
+  use Bardat_Mod, only: read_config
 
   !read from netcdf file
-  use atmesh_mod, only: init_atmesh_nc, read_atmesh_nc 
-  use atmesh_mod, only: construct_meshdata_from_netcdf
+  use Bardat_Mod, only: init_bardata_nc, read_bardata_nc 
+  use Bardat_Mod, only: construct_meshdata_from_netcdf
   
   implicit none
   private
@@ -73,7 +73,7 @@ module ATMESH
 
     ! Local Variables
     type(ESMF_VM)                :: vm
-    character(len=*),parameter   :: subname='(ATMESH:SetServices)'
+    character(len=*),parameter   :: subname='(BARDATA:SetServices)'
 
     rc = ESMF_SUCCESS
     
@@ -123,15 +123,15 @@ module ATMESH
     !  return  ! bail out
 
     call NUOPC_CompSpecialize(model, specLabel=model_label_Finalize, &
-      specRoutine=ATMESH_model_finalize, rc=rc)
+      specRoutine=BARDATA_model_finalize, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &
       return  ! bail out
 
 
-    call init_atmesh_nc()
-    write(info,*) subname,' --- Read atmesh info from file --- '
+    call init_bardata_nc()
+    write(info,*) subname,' --- Read bardata info from file --- '
     !print *,      info
     call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
 
@@ -145,7 +145,7 @@ module ATMESH
     !! is to set which version of the Initialize Phase Definition (IPD)
     !! to use.
     !!
-    !! For this ATMESH cap, we are using IPDv01.
+    !! For this BARDATA cap, we are using IPDv01.
     !!
     !! @param model an ESMF_GridComp object
     !! @param importState an ESMF_State object for import fields
@@ -161,12 +161,12 @@ module ATMESH
 
     ! Local Variables
     integer              :: num,i
-    character(len=*),parameter  :: subname='(ATMESH:AdvertiseFields)'
+    character(len=*),parameter  :: subname='(BARDATA:AdvertiseFields)'
 
     rc = ESMF_SUCCESS
 
 
-    call ATMESH_FieldsSetup()
+    call BARDATA_FieldsSetup()
 !
 
       do num = 1,fldsToWav_num
@@ -178,7 +178,7 @@ module ATMESH
           call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
      end do
 
-      call ATMESH_AdvertiseFields(importState, fldsToWav_num, fldsToWav, rc)
+      call BARDATA_AdvertiseFields(importState, fldsToWav_num, fldsToWav, rc)
       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__, &
         file=__FILE__)) &
@@ -194,7 +194,7 @@ module ATMESH
 
     end do
 !
-    call ATMESH_AdvertiseFields(exportState, fldsFrATM_num, fldsFrATM, rc)
+    call BARDATA_AdvertiseFields(exportState, fldsFrATM_num, fldsFrATM, rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &
@@ -214,14 +214,14 @@ module ATMESH
     !! @param nfields number of fields
     !! @param field_defs an array of fld_list_type listing the fields to advertise
     !! @param rc return code
-    subroutine ATMESH_AdvertiseFields(state, nfields, field_defs, rc)
+    subroutine BARDATA_AdvertiseFields(state, nfields, field_defs, rc)
         type(ESMF_State), intent(inout)             :: state
         integer,intent(in)                          :: nfields
         type(fld_list_type), intent(inout)          :: field_defs(:)
         integer, intent(inout)                      :: rc
 
         integer                                     :: i
-        character(len=*),parameter  :: subname='(ATMESH:ATMESH_AdvertiseFields)'
+        character(len=*),parameter  :: subname='(BARDATA:BARDATA_AdvertiseFields)'
 
         rc = ESMF_SUCCESS
 
@@ -244,19 +244,19 @@ module ATMESH
         enddo
         !print *,      subname,' --- IN   --- '
 
-    end subroutine ATMESH_AdvertiseFields
+    end subroutine BARDATA_AdvertiseFields
 
 
 
 
-   subroutine ATMESH_FieldsSetup
+   subroutine BARDATA_FieldsSetup
     integer                     :: rc
-    character(len=*),parameter  :: subname='(ATMESH:ATMESH_FieldsSetup)'
+    character(len=*),parameter  :: subname='(BARDATA:BARDATA_FieldsSetup)'
 
 
-    !--------- import fields to ATMESH  -------------
+    !--------- import fields to BARDATA  -------------
     
-    !--------- export fields from ATMESH -------------
+    !--------- export fields from BARDATA -------------
     call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="air_pressure_at_sea_level" , shortname= "pmsl" )
     call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="inst_zonal_wind_height10m" , shortname= "izwh10m" )
     call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="inst_merid_wind_height10m" , shortname= "imwh10m" )
@@ -264,7 +264,7 @@ module ATMESH
     write(info,*) subname,' --- Passed--- '
     !print *,      subname,' --- Passed --- '
     call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)     
-    end subroutine ATMESH_FieldsSetup
+    end subroutine BARDATA_FieldsSetup
 
 
     !---------------------------------------------------------------------------------
@@ -282,7 +282,7 @@ module ATMESH
 
         ! local variables
         integer :: rc
-        character(len=*), parameter :: subname='(ATMESH:fld_list_add)'
+        character(len=*), parameter :: subname='(BARDATA:fld_list_add)'
 
         ! fill in the new entry
 
@@ -327,7 +327,7 @@ module ATMESH
     !! information about whether the field's grid will be provided by the cap,
     !! and optionally a pointer to the field's data array.  Currently, all fields
     !! are defined on the same mesh defined by the cap.
-    !! The fields are created by calling ATMESH::adcirc_XXXXXXXXXXXXXXXXXXX.
+    !! The fields are created by calling BARDATA::adcirc_XXXXXXXXXXXXXXXXXXX.
     !!
     !! @param model an ESMF_GridComp object
     !! @param importState an ESMF_State object for import fields
@@ -342,7 +342,7 @@ module ATMESH
     integer, intent(out) :: rc
     
     ! local variables    
-    type(ESMF_TimeInterval) :: ATMESHTimeStep
+    type(ESMF_TimeInterval) :: BARDATATimeStep
     type(ESMF_Field)        :: field
     !Saeed added
     type(meshdata)               :: mdataw
@@ -350,11 +350,11 @@ module ATMESH
     type(ESMF_VM)                :: vm
     type(ESMF_Time)              :: startTime
     integer                      :: localPet, petCount
-    character(len=*),parameter   :: subname='(ATMESH:RealizeFieldsProvidingGrid)'
+    character(len=*),parameter   :: subname='(BARDATA:RealizeFieldsProvidingGrid)'
 
     rc = ESMF_SUCCESS
 
-    !print *,"ATMESH ..1.............................................. >> "
+    !print *,"BARDATA ..1.............................................. >> "
     !> \details Get current ESMF VM.
     call ESMF_VMGetCurrent(vm, rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -362,12 +362,12 @@ module ATMESH
       file=__FILE__)) &
       return  ! bail out
 
-    !print *,"ATMESH ..2.............................................. >> "
+    !print *,"BARDATA ..2.............................................. >> "
     ! Get query local pet information for handeling global node information
     call ESMF_VMGet(vm, localPet=localPet, petCount=petCount, rc=rc)
     ! call ESMF_VMPrint(vm, rc=rc)
 
-    !print *,localPet,"< LOCAL pet, ATMESH ..3.............................................. >> "
+    !print *,localPet,"< LOCAL pet, BARDATA ..3.............................................. >> "
     !! Assign VM to mesh data type.
     mdataw%vm = vm
 
@@ -376,7 +376,7 @@ module ATMESH
     call create_parallel_esmf_mesh_from_meshdata(mdataw,ModelMesh )
     !
 
-    call ESMF_MeshWrite(ModelMesh, filename="atmesh_mesh.nc", rc=rc)
+    call ESMF_MeshWrite(ModelMesh, filename="bardata_mesh.nc", rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &
@@ -398,19 +398,19 @@ module ATMESH
 
 
 
-    call ATMESH_RealizeFields(importState, meshIn , mdataw, fldsToWav_num, fldsToWav, "ATMESH import", rc)
+    call BARDATA_RealizeFields(importState, meshIn , mdataw, fldsToWav_num, fldsToWav, "BARDATA import", rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__, &
         file=__FILE__)) &
         return  ! bail out
 !
-    call ATMESH_RealizeFields(exportState, meshOut, mdataw, fldsFrATM_num, fldsFrATM, "ATMESH export", rc)
+    call BARDATA_RealizeFields(exportState, meshOut, mdataw, fldsFrATM_num, fldsFrATM, "BARDATA export", rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
         line=__LINE__, &
         file=__FILE__)) &
         return  ! bail out
 
-      !Init ATMesh
+      !Init BARDATA
 !    ! query Component for the driverClock
 !    call NUOPC_ModelGet(model, driverClock=driverClock, rc=rc)
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -425,7 +425,7 @@ module ATMESH
 !      file=__FILE__)) &
 !      return  ! bail out
 
-!    call read_atmesh_nc(startTime)
+!    call read_bardata_nc(startTime)
 
     write(info,*) subname,' --- initialization phase 2 completed --- '
     !print *,      subname,' --- initialization phase 2 completed --- '
@@ -435,7 +435,7 @@ module ATMESH
 
  !> Adds a set of fields to an ESMF_State object.  Each field is wrapped
   !! in an ESMF_Field object.  Memory is either allocated by ESMF or
-  !! an existing ATMESH pointer is referenced.
+  !! an existing BARDATA pointer is referenced.
   !!
   !! @param state the ESMF_State object to add fields to
   !! @param grid the ESMF_Grid object on which to define the fields
@@ -443,7 +443,7 @@ module ATMESH
   !! @param field_defs array of fld_list_type indicating the fields to add
   !! @param tag used to output to the log
   !! @param rc return code
-  subroutine ATMESH_RealizeFields(state, mesh, mdata, nfields, field_defs, tag, rc)
+  subroutine BARDATA_RealizeFields(state, mesh, mdata, nfields, field_defs, tag, rc)
 
     type(ESMF_State), intent(inout)             :: state
     type(ESMF_Mesh), intent(in)                 :: mesh
@@ -456,7 +456,7 @@ module ATMESH
 
     type(ESMF_Field)                            :: field
     integer                                     :: i
-    character(len=*),parameter  :: subname='(ATMESH:ATMESH_RealizeFields)'
+    character(len=*),parameter  :: subname='(BARDATA:BARDATA_RealizeFields)'
 
     rc = ESMF_SUCCESS
 
@@ -506,7 +506,7 @@ module ATMESH
         write(info,*) subname,' --- OUT--- '
         !print *,      subname,' --- OUT --- '
         call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line=__LINE__, file=__FILE__, rc=rc)
-  end subroutine ATMESH_RealizeFields
+  end subroutine BARDATA_RealizeFields
   !-----------------------------------------------------------------------------
 
 
@@ -516,7 +516,7 @@ module ATMESH
 !
 !    ! local variables
 !    type(ESMF_Clock)              :: clock
-!    type(ESMF_TimeInterval)       :: ATMESHTimeStep
+!    type(ESMF_TimeInterval)       :: BARDATATimeStep
 !
 !    rc = ESMF_SUCCESS
 !
@@ -531,25 +531,25 @@ module ATMESH
 !    ! initialize internal clock
 !    ! - on entry, the component clock is a copy of the parent clock
 !    ! - the parent clock is on the slow timescale hwrf timesteps
-!    ! - reset the component clock to have a timeStep that is for adc-atmesh of the parent
+!    ! - reset the component clock to have a timeStep that is for adc-bardata of the parent
 !    !   -> timesteps
 !    
-!    !call ESMF_TimeIntervalSet(ATMESHTimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
+!    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
 !    !TODO: use nint !!?
 !
-!    call ESMF_TimeIntervalSet(ATMESHTimeStep, s=atm_int, rc=rc) ! 5 minute steps
+!    call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, rc=rc) ! 5 minute steps
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
 !       line=__LINE__, &
 !      file=__FILE__)) &
 !      return  ! bail out
-!    call NUOPC_CompSetClock(model, clock, ATMESHTimeStep, rc=rc)
+!    call NUOPC_CompSetClock(model, clock, BARDATATimeStep, rc=rc)
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
 !      line=__LINE__, &
 !      file=__FILE__)) &
 !      return  ! bail out
 !
-!    print *, "ATMESH Timeinterval1 = "
-!    call ESMF_TimeIntervalPrint(ATMESHTimeStep, options="string", rc=rc)
+!    print *, "BARDATA Timeinterval1 = "
+!    call ESMF_TimeIntervalPrint(BARDATATimeStep, options="string", rc=rc)
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
 !       line=__LINE__, &
 !        file=__FILE__)) &
@@ -559,10 +559,10 @@ module ATMESH
 !    ! initialize internal clock
 !    ! - on entry, the component clock is a copy of the parent clock
 !    ! - the parent clock is on the slow timescale hwrf timesteps
-!    ! - reset the component clock to have a timeStep that is for adc-atmesh of the parent
+!    ! - reset the component clock to have a timeStep that is for adc-bardata of the parent
 !    !   -> timesteps
 !    
-!    !call ESMF_TimeIntervalSet(ATMESHTimeStep, s=     adc_cpl_int, sN=adc_cpl_num, sD=adc_cpl_den, rc=rc) ! 5 minute steps
+!    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=     adc_cpl_int, sN=adc_cpl_num, sD=adc_cpl_den, rc=rc) ! 5 minute steps
 !    !TODO: use nint !!?
 !
 !  end subroutine
@@ -575,8 +575,8 @@ module ATMESH
     
     ! local variables
 !    type(ESMF_Clock)              :: clock
-!    type(ESMF_TimeInterval)       :: ATMESHTimeStep, timestep
-!    character(len=*),parameter  :: subname='(atmesh_cap:SetClock)'
+!    type(ESMF_TimeInterval)       :: BARDATATimeStep, timestep
+!    character(len=*),parameter  :: subname='(bardata_cap:SetClock)'
 
 !    rc = ESMF_SUCCESS
     
@@ -586,7 +586,7 @@ module ATMESH
 !      line=__LINE__, &
 !      file=__FILE__)) &
 !      return  ! bail out
-    !call ESMF_TimeIntervalSet(ATMESHTimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
+    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
     ! tcraig: dt is the cice thermodynamic timestep in seconds
 !    call ESMF_TimeIntervalSet(timestep, s=atm_int, rc=rc)
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
@@ -602,12 +602,12 @@ module ATMESH
       
     ! initialize internal clock
     ! here: parent Clock and stability timeStep determine actual model timeStep
-!    call ESMF_TimeIntervalSet(ATMESHTimeStep, s=atm_int, rc=rc) 
+!    call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, rc=rc) 
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
 !      line=__LINE__, &
 !      file=__FILE__)) &
 !      return  ! bail out
-!    call NUOPC_CompSetClock(model, clock, ATMESHTimeStep, rc=rc)
+!    call NUOPC_CompSetClock(model, clock, BARDATATimeStep, rc=rc)
 !    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
 !      line=__LINE__, &
 !      file=__FILE__)) &
@@ -616,11 +616,11 @@ module ATMESH
 !  end subroutine
     !-----------------------------------------------------------------------------
 
-      !> Called by NUOPC to advance the ATMESH model a single timestep >>>>>
+      !> Called by NUOPC to advance the BARDATA model a single timestep >>>>>
       !! <<<<<<<<<  TODO: check! this is not what we want!!!.
       !!
       !! This subroutine copies field data out of the cap import state and into the
-      !! model internal arrays.  Then it calls ATMESH_Run to make a NN timesteps.
+      !! model internal arrays.  Then it calls BARDATA_Run to make a NN timesteps.
       !! Finally, it copies the updated arrays into the cap export state.
       !!
       !! @param model an ESMF_GridComp object
@@ -635,7 +635,7 @@ module ATMESH
     type(ESMF_State)              :: importState, exportState
     type(ESMF_Time)               :: currTime
     type(ESMF_TimeInterval)       :: timeStep
-    character(len=*),parameter    :: subname='(ATMESH:ModelAdvance)'
+    character(len=*),parameter    :: subname='(BARDATA:ModelAdvance)'
     !tmp vector
     real(ESMF_KIND_R8), pointer   :: tmp(:)
 
@@ -674,7 +674,7 @@ module ATMESH
     ! stopTime of the internal Clock has been reached.
 
     call ESMF_ClockPrint(clock, options="currTime", &
-      preString="------>Advancing ATMESH from: ", rc=rc)
+      preString="------>Advancing BARDATA from: ", rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &
@@ -687,7 +687,7 @@ module ATMESH
       return  ! bail out
 
     call ESMF_TimePrint(currTime + timeStep, &
-      preString="------------------ATMESH-------------> to: ", rc=rc)
+      preString="------------------BARDATA-------------> to: ", rc=rc)
     if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
       line=__LINE__, &
       file=__FILE__)) &
@@ -699,8 +699,8 @@ module ATMESH
         file=__FILE__)) &
         return  ! bail out
 
-    print *      , "ATMESH currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
-    write(info, *) "ATMESH currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
+    print *      , "BARDATA currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
+    write(info, *) "BARDATA currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
     call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line=__LINE__, file=__FILE__, rc=rc)
     
     call ESMF_TimeGet(currTime, timeStringISOFrac=timeStr , rc=rc)
@@ -717,9 +717,9 @@ module ATMESH
     !-----------------------------------------
     !   EXPORT
     !-----------------------------------------
-    !update uwnd, vwnd, pres from nearset time in atmesh netcdf file
+    !update uwnd, vwnd, pres from nearset time in bardata netcdf file
     !TODO: update file name!!!!
-    call read_atmesh_nc(currTime)
+    call read_bardata_nc(currTime)
 
     !pack and send exported fields
     allocate (tmp(mdataOutw%NumOwnedNd))
@@ -773,7 +773,7 @@ module ATMESH
         tmp(i1) = PRES(mdataOutw%owned_to_present_nodes(i1),1) 
         
         if ( abs(tmp(i1) ).gt. 1e11)  then
-          STOP '  dataPtr_pmsl > mask1 > in ATMesh ! '     
+          STOP '  dataPtr_pmsl > mask1 > in BARDATA ! '     
         end if
         !tmp(i1) = 1e4
     end do
@@ -807,7 +807,7 @@ module ATMESH
     ! local variables
     type(ESMF_Field) :: lfield
     integer :: lrc
-    character(len=*),parameter :: subname='(atmesh_cap:State_GetFldPtr)'
+    character(len=*),parameter :: subname='(bardata_cap:State_GetFldPtr)'
 
     call ESMF_StateGet(ST, itemName=trim(fldname), field=lfield, rc=lrc)
     if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
@@ -818,7 +818,7 @@ module ATMESH
     if (dump) then
        if (.not. present(timeStr)) timeStr="_"
         call ESMF_FieldWrite(lfield, &
-        fileName='field_atmesh_'//trim(fldname)//trim(timeStr)//'.nc', &
+        fileName='field_bardata_'//trim(fldname)//trim(timeStr)//'.nc', &
         rc=rc,overwrite=.true.)
         if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
           line=__LINE__, &
@@ -843,7 +843,7 @@ module ATMESH
     ! local variables
     type(ESMF_Field) :: lfield
     integer :: lrc
-    character(len=*),parameter :: subname='(ATMESH:State_GetFldPtr)'
+    character(len=*),parameter :: subname='(BARDATA:State_GetFldPtr)'
 
     call ESMF_StateGet(ST, itemName=trim(fldname), field=lfield, rc=lrc)
     if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
@@ -892,11 +892,11 @@ module ATMESH
 
   !-----------------------------------------------------------------------
   !> Called by NUOPC at the end of the run to clean up.  The cap does
-  !! this simply by calling ATMESH_Final.
+  !! this simply by calling BARDATA_Final.
   !!
   !! @param gcomp the ESMF_GridComp object
   !! @param rc return code
-    subroutine ATMESH_model_finalize(gcomp, rc)
+    subroutine BARDATA_model_finalize(gcomp, rc)
 
         ! input arguments
         type(ESMF_GridComp)  :: gcomp
@@ -905,7 +905,7 @@ module ATMESH
         ! local variables
         type(ESMF_Clock)     :: clock
         type(ESMF_Time)                        :: currTime
-        character(len=*),parameter  :: subname='(ATMESH:atmesh_model_finalize)'
+        character(len=*),parameter  :: subname='(BARDATA:bardata_model_finalize)'
 
         rc = ESMF_SUCCESS
 
@@ -927,6 +927,6 @@ module ATMESH
         write(info,*) subname,' --- finalize completed --- '
         call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
 
-    end subroutine ATMESH_model_finalize
+    end subroutine BARDATA_model_finalize
 
 end module
