@@ -3,295 +3,73 @@
 ###########################################################################
 ### Author:  Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
 ###
-### Version - 1.0 Mon Nov 16 2020
+### Version - 1.1
+###
+###   1.1 Sun Mar 08 2022
+###   1.0 Mon Nov 16 2020
 ###########################################################################
 
 set +u
 
+###====================
+# Make sure that the current working directory is in the PATH
+[[ ! :$PATH: == *:".":* ]] && export PATH="${PATH}:."
+
+# Get the directory where the script is located
+if [[ $(uname -s) == Darwin ]]; then
+  src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+  src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+else
+  src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+  src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+fi
+
+lst="${src_dir:+${src_dir}/}functions_utilities ${src_dir:+${src_dir}/}scripts/functions_utilities functions_utilities"
+funcs=
+for ilst in ${lst}
+do
+  if [ -f "${ilst:-}" ]; then
+    funcs="${ilst}"
+    break
+  fi
+done
+
+if [ -n "${funcs:+1}" ]; then
+  source "${funcs}"
+
+  if [ $? -ne 0 ]; then
+    echo " ### ERROR :: in ${src_name}"
+    echo "     Cannot load the required file: ${funcs}"
+    echo "     Exiting now ..."
+    echo
+
+    unset src_name src_dir ilst funcs
+    return 1
+  fi
+else
+  echo " ### ERROR :: in ${src_name}"
+  echo "     Cannot load the required file: functions_utilities"
+  echo "     Exiting now ..."
+  echo
+
+  unset src_name src_dir ilst funcs
+  return 1
+fi
+
+unset src_name src_dir ilst funcs
+###====================
+
+
 export MY_COMPILING_SYTEMS="gnu, intel, pgi"
+export MY_COMPILER_DEFAULT="intel"
+
 export MY_COMPONENT_DEFAULT="ogcmdl"
 export MY_COMPONENT_LIST="ogcmdl nuopc"
 
 
 ##################################################
-### BEG:: UTILITY FUNCTIONS
-##################################################
-
-###========================================
-### isInteger()
-### Usage:      isInteger var
-### Parameters: var
-### Returns:    1 if var is not an integer (0 is an integer as well)
-###             0 in any other case
-### Echoes:     NONE
-###========================================
-isInteger()
-{
-  local -i retval=1
-
-  [ $# -eq 0 ] && return ${retval}
-
-  if [ "${1:-UNDEF}" -eq "${1}" ] 2>/dev/null
-  then
-    retval=0
-  fi
-
-  return ${retval}
-}
-
-###========================================
-### getInteger()
-### Usage:      getInteger int
-### Parameters: int (int >=0 or, int < 0)
-### Returns:    1 if var is not an integer
-###             0 in any other case
-### Echoes:     int, if it is a valid integer (including 0),
-###             in any other case echoes an empty string
-###========================================
-getInteger()
-{
-  local -i retval=0
-  local echoval= minus=
-
-  # strip spaces, '+' signs and '-' signs
-  # if the first character of the string is '-', set the minus variable
-  echoval="$( echo "${1}" | sed 's/[[:space:]+]//g' )"
-  [ "X$( echo "${echoval:0:1}" )" = "X-" ] && minus="-"
-  echoval="${minus}$( echo "${echoval}" | sed 's/[[:space:]-]//g' )"
-
-  if isInteger ${echoval}; then
-    echoval="$(echo "scale=0; ${echoval} + 0" | bc -ql 2>/dev/null)"
-    retval=$?
-    echoval="${echoval:-0}"
-  else
-    echoval=
-    retval=1
-  fi
-
-  echo -n ${echoval}
-
-  return ${retval}
-}
-
-###========================================
-### getPosInteger()
-### Usage:      getPosInteger posint
-### Parameters: posint (posint >= 0)
-### Returns:    1 if var is not a positive integer
-###             0 in any other case
-### Echoes:     posint if it is a valid positive integer
-###             (including 0), in any other case echoes an
-###             empty string
-###========================================
-getPosInteger()
-{
-  local -i retval=0
-  local echoval=
-
-  echoval=$( getInteger "${1}" )
-  retval=$?
-
-  if [ ${retval} -ne 0 ] ; then
-    echoval=
-    retval=1
-  else
-    if [ ${echoval} -lt 0 ]; then
-      echoval=
-      retval=1
-    fi
-  fi
-
-  echo -n ${echoval}
-
-  return ${retval}
-}
-
-###========================================
-### getYesNo()
-### Usage:      getYesNo value
-### Parameters:
-###   value : The input value (the value of a parameter)
-###           The value of a bash parameter that is checked
-###           against TRUE/FALSE. If the value is one of:
-###             ">=1|y|yes|yea|yeah|yep"
-###           then the value of parameter is TRUE (answer = yes).
-###           If the value is one of:
-###             "<=0|n|no|not|nop|nope"
-###           then the value of parameter is FALSE (answer = no).
-###           If the value is empty then the value of parameter
-###           is FALSE (answer = no)
-###
-### Returns : NONE
-###
-### Exports : NONE
-###
-### Echoes  : A "yes" or "no" answer.
-###
-### getYesNo: Checks if a parameter is assigned a TRUE/FALSE value.
-###========================================
-getYesNo()
-{
-  local param answer
-  
-  param="$( echo "${1}" | tr '[:upper:]' '[:lower:]' )"
-
-  if [ "${param}" -eq "${param}" ] 2>/dev/null
-  then
-    [ ${param} -le 0 ] && param=0
-    [ ${param} -gt 0 ] && param=1
-  fi
-
-  case "${param}" in
-    1|y|yes|yea|yeah|yep) answer="yes" ;;
-     0|n|no|not|nop|nope) answer="no"  ;;
-                       *) answer=""    ;; # DEFAULT
-  esac
-
-  echo -n "${answer}"
-}
-
-###========================================
-### toUPPER()
-### Usage:      toUPPER string
-### Parameters:
-###   string : The string in to convert
-###
-### Returns : NONE
-###
-### Exports : NONE
-###
-### Echoes  : The input string converted to an all upper case string
-###
-### toUPPER: Converts a string to an all upper case string
-###========================================
-function toUPPER()
-{
-  echo "${1}" | tr '[:lower:]' '[:upper:]'
-}
-
-###========================================
-### toLOWER()
-### Usage:      toLOWER string
-### Parameters:
-###   string : The string in to convert
-###
-### Returns : NONE
-###
-### Exports : NONE
-###
-### Echoes  : The input string converted to an all lower case string
-###
-### toLOWER: Converts a string to an all lower case string
-###========================================
-function toLOWER()
-{
-  echo "${1}" | tr '[:upper:]' '[:lower:]'
-}
-
-###========================================
-### strESC()
-### Usage:      strESC string
-### Parameters:
-###   string : The input string
-###            The input string on which this function is applied
-###            to escape special characters used in bash/sed ...
-###
-### Returns : NONE
-###
-### Exports : NONE
-###
-### Echoes  : The modified string with its special characters escaped
-###
-### strESC: Escapes special characters in a string: "'()/[]*.
-###========================================
-strESC()
-{
-  echo -n "$( echo "${*}" | sed -e "s/[\"\'\(\)\/\*\!]/\\\&/g;s/\[/\\\&/g;s/\]/\\\&/g" )"
-}
-
-strESC1()
-{
-  echo -n "$( echo "${*}" | sed -e "s/[\&\/\*\!]/\\\&/g;s/\[/\\\&/g;s/\]/\\\&/g" )"
-}
-
-###========================================
-### strTrim()
-### Usage:      strTrim s1 flag
-### Parameters:
-###     s1 : The input string
-###   flag : Integer
-###          A value that controls the action of strTrim.
-###          If flag is zero or not present, trailing blanks are removed.
-###          Leading blanks are removed if it is equal to 1.
-###          Both are removed if it is equal to 2.
-###          In any other case, trailing blanks are removed.
-###
-### Returns : NONE
-###
-### Exports : NONE
-###
-### Echoes  : s1 with all leading and/or trailing
-###           white spaces removed.
-###
-### strTrim: Removes all leading and/or trailing white spaces
-###          from the input string
-###========================================
-function strTrim ()
-{
-  local trimFLG="${2:-0}"
-  local out_str=
-
-  case ${trimFLG} in
-    0) out_str="$(echo "${1}" | sed 's/[[:space:]]*$//')" ;;
-    1) out_str="$(echo "${1}" | sed 's/^[[:space:]]*//')" ;;
-    2) out_str="$(echo "${1}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;;
-    *) out_str="$(echo "${1}" | sed 's/[[:space:]]*$//')" ;;
-  esac
-
-  echo -n ${out_str}
-}
-##################################################
-### END:: UTILITY FUNCTIONS
-##################################################
-
-
-##################################################
 ### BEG:: MODELLING SYSTEM BUILD FUNCTIONS
 ##################################################
-
-###========================================
-### checkFuncOpt()
-### Usage:      checkFuncOpt opt_name
-### Parameters:
-###   opt_name: The name of the option to a function
-###
-### Returns : Exits on error
-###
-### Exports : __OPTION_LIST
-###
-### Echoes  : NONE
-###
-### checkFuncOpt: Checks if an option to a function is already supplied.
-###========================================
-checkFuncOpt() {
-  local opt_inp opt_list
-
-  [ $# -eq 0 ] && return -1
-
-  opt_inp="$( strTrim "${1}" 2 )"
-  opt_inp="$( echo "${opt_inp}" | sed 's/^[-]*//' )"
-
-  opt_list="$( strTrim "${__OPTION_LIST}" 2 )"
-  [ -n ${opt_list:+1} ] && \
-    opt_list=":$( echo "${opt_list}" | sed 's/ /:/g' ):"
-
-  [ "$( echo "${opt_list}" | egrep -o ":${opt_inp}:" )" ] && return 1
-
-  __OPTION_LIST="${__OPTION_LIST} ${opt_inp}"
-  export __OPTION_LIST
-
-  return 0
-}
 
 ###========================================
 ### ParseArgs()
@@ -320,7 +98,7 @@ ParseArgs()
 
   __MY_CLEAN=0
   __MY_ADD_CMAKE_FLAGS=
-  __MY_COMPILER=intel
+  __MY_COMPILER="${MY_COMPILER_DEFAULT}"
   __MY_COMPONENT="${MY_COMPONENT_DEFAULT}" 
   __MY_PARALLEL=0
   __MY_PARMAKE=1
@@ -447,7 +225,7 @@ ParseArgs()
       -v | --v | -verbose | --verbose )
           checkFuncOpt "--verbose"
           if [ $? -eq 0 ]; then
-            __MY_VERBOSE=
+            __MY_VERBOSE=b # This is suitable for GNU's make
             if [ "X${opt_arg}" != "X" ]; then
             __MY_VERBOSE="$( echo "$( strTrim "${opt_arg}" 2 )" | sed 's/[[:space:]]/,/g' )"
             fi
@@ -535,7 +313,7 @@ UsageBuild()
   #---
   echo "  -compiler|--compiler [=|space] \"compiling_system\" (OPTIONAL)."
   echo "    The compiling system to use (${MY_COMPILING_SYTEMS})."
-  echo "    Default: none."
+  echo "    Default: ${MY_COMPILER_DEFAULT}."
   echo
   #---
   echo "  -component|--component [=|space] \"component_list\" (OPTIONAL)."
@@ -567,91 +345,20 @@ UsageBuild()
   echo "    Default: R."
   echo
   #---
-  echo "  -v|--v|-verbose|--verbose [=|space] \"0|1|yes|no\" (OPTIONAL)."
+  echo "  -v|--v|-verbose|--verbose [=|space] \"a,b,v,i,j,m,n\" (any combination, OPTIONAL)."
   echo "    Enable verbosity in the make files during compilation."
-  echo "    Default: 0|no."
+  echo "      a (all)      : all types of debugging output are enabled"
+  echo "      n (none)     : disable all debugging currently enabled"
+  echo "      b (basic)    : basic debugging and whether the build was successful or not"
+  echo "      v (verbose)  : a level above basic"
+  echo "      i (implicit) : prints messages describing the implicit rule searches for each target"
+  echo "      j (jobs)     : prints messages giving details on the invocation of specific sub-commands"
+  echo "      m (makefile) : enables messages while rebuilding makefiles"
+  echo "    Default:none."
   echo
   #---
 
   exit 0
-}
-
-###========================================
-### getCompilerNames()
-###
-### Usage:      getCompilerNames compile_family
-###
-### Parameters: compile_family = one of: gnu, intel, pgi
-###
-### Returns : error status
-###
-### Exports : CC CXX FC F90 PCC PCXX PFC PF90
-###
-### Echoes  : NONE
-###
-### getCompilerNames: Exports the compiler names for a compiler family.
-###========================================
- getCompilerNames() {
-  local cmp_family
-  local err=0
-
-  [ $# -eq 0 ] && return ${err}
-
-  cmp_family="$( toLOWER "${1}" )"
-
-  case "${cmp_family}" in
-    gnu)
-       CC=gcc
-       CXX=g++
-       FC=gfortran
-       F90=gfortran
-       PCC=${PCC:-mpicc}
-       PCXX=${PCXX:-mpicxx}
-       PFC=${PFC:-mpif90}
-       PF90=${PF90:-${PFC}}
-       ;;
-    intel)
-       CC=icc
-       CXX=icpc
-       FC=ifort
-       F90=ifort
-       PCC=${PCC:-mpiicc}
-       PCXX=${PCXX:-mpiicpc}
-       PFC=${PFC:-mpiifort}
-       PF90=${PF90:-${PFC}}
-       ;;
-    pgi)
-       CC=pgcc
-       CXX=pgc++
-       FC=pgfortran
-       F90=pgfortran
-       PCC=${PCC:-pgcc}
-       PCXX=${PCXX:-pgc++}
-       PFC==${PFC:-pgfortran}
-       PF90=${PF90:-${PFC}}
-       ;;
-    *) # No defaults. Give the user the option to define the environment variables
-       # CC, CXX, FC, F90 before running this script.
-       #echo "WARNING: The supplied compiling system \"${COMPILER}\", is not suported."
-       #echo "         Supported systems are anyone of: compiling_system=[${MY_COMPILING_SYTEMS}]"
-       #echo "         Use: --compiler=compiling_system."
-       #echo "         Will continue with OS defaults."
-       CC=${CC:-}
-       CXX=${CXX:-}
-       FC=${FC:-}
-       F90=${F90:-}
-       PCC=${CC:-}
-       PCXX=${CXX:-}
-       PFC=${FC:-}
-       PF90=${F90:-}
-
-       err=1
-       ;;
-  esac
-
-  export CC CXX FC F90 PCC PCXX PFC PF90
-
-  return ${err}
 }
 
 ###========================================
@@ -670,8 +377,10 @@ UsageBuild()
 ###
 ### getEnvVars: Exports all the environment variables required by the build script.
 ###========================================
- getEnvVars() {
-  local src_name src_dir component_ww3
+getEnvVars()
+{
+  local src_name src_dir
+
 
   if [ -n "${APP_DIR:+1}" ]; then
     src_dir="${APP_DIR}"
@@ -681,46 +390,44 @@ UsageBuild()
     else
       # Get the directory where the script is located
       if [[ $(uname -s) == Darwin ]]; then
-        readonly src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
-        readonly src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+        src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
       else
-        readonly src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
-        readonly src_dir="$(cd "$(dirname "$(realpath -s "${BASH_SOURCE[0]}")" )" && pwd -P)"
+        src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
       fi
     fi
   fi
+  APP_DIR=${src_dir}
 
-  CLEAN=${MY_CLEAN:-0}
-  export CLEAN
 
-  ADD_CMAKE_FLAGS=${MY_ADD_CMAKE_FLAGS}
-  export ADD_CMAKE_FLAGS
+  CLEAN=${MY_CLEAN}
+  export CLEAN=${CLEAN:-0}
 
   COMPILER="$( toLOWER "$( basename "${MY_COMPILER}" )" )"
-  export COMPILER
+  export COMPILER=${COMPILER:-}
 
   COMPONENT="$( toUPPER "${MY_COMPONENT}" )"
-  export COMPONENT
+  export COMPONENT=${COMPONENT:-}
 
-  PARALLEL=${MY_PARALLEL:-1}
-  export PARALLEL
+  PARALLEL=${MY_PARALLEL}
+  export PARALLEL=${PARALLEL:-0}
 
-  if [ "${MY_PARMAKE:0}" -gt 1 ]; then
-    PARMAKE="${MY_PARMAKE}"
-  else
-    PARMAKE=
-  fi
-  export PARMAKE
+  ADD_CMAKE_FLAGS=${MY_ADD_CMAKE_FLAGS}
+  export ADD_CMAKE_FLAGS="${ADD_CMAKE_FLAGS:-}"
 
-  INSTALL_DIR=${MY_INSTALL_DIR:-}
-  export INSTALL_DIR
+  PARMAKE=${MY_PARMAKE}
+  export PARMAKE=${PARMAKE:-1}
 
   VERBOSE="$( toLOWER "${MY_VERBOSE}" )"
-  export VERBOSE
+  export VERBOSE=${VERBOSE:-}
+
+  INSTALL_DIR=${MY_INSTALL_DIR}
+  export INSTALL_DIR=${INSTALL_DIR:-}
 
   # Get the CMake build type
-  TYPE="$( toUPPER "${MY_TYPE:-R}" )"
-  export TYPE
+  TYPE="$( toUPPER "${MY_TYPE}" )"
+  export ${TYPE:-R}
 
   case "${TYPE}" in
      D) export OPT_TYPE="Debug"          ;;
@@ -746,7 +453,7 @@ UsageBuild()
 ###
 ### checkComponents: Checks if a user supplied modeling component is supported.
 ###========================================
- checkComponents() {
+checkComponents() {
   local comp_user comp_all
   local icomp
 
@@ -784,7 +491,7 @@ UsageBuild()
 ### compileNUOPC: Uses environment variables to compile a NUOPC application.
 ###========================================
 compileNUOPC() {
-  local cmp_type cmp_make cmp_mjob
+  local cmp_type cmp_make cmp_verb cmp_mjob
   local err=0
 
   local prog_dir="nuopc"
@@ -846,7 +553,8 @@ compileNUOPC() {
 ### compileOGCMDL: Uses environment variables to compile a OGCMDL application.
 ###========================================
 compileOGCMDL() {
-  local cmp_type cmp_make cmp_mjob
+  local cmp_type cmp_make cmp_verb cmp_mjob
+  local cmake_verb make_verb
   local err=0
 
   local prog_lib_dirs="datetime-fortran GSW-Fortran"
@@ -858,7 +566,13 @@ compileOGCMDL() {
   cmp_type="$( toLOWER "${1}" )"
   cmp_make=Makefile
   cmp_mjob="${PARMAKE:+-j ${PARMAKE}}"
-  cmp_verb="${VERBOSE:+--debug=${VERBOSE}}"
+
+
+  make_verb="$( getGNUMakeVerbosity "${VERBOSE}" )"
+  make_verb="${make_verb:+--debug=${make_verb}}"
+
+  cmake_verb="${VERBOSE:+-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON}"
+
 
   case "${cmp_type}" in
     "clean"|"distclean" )
@@ -878,7 +592,7 @@ compileOGCMDL() {
       if [ -e "${prog_dir}/${cmp_make}" ]; then
         pushd ${prog_dir} >/dev/null 2>&1
           echo "compileOGCMDL :: Cleaning: in ${prog_dir}"
-          eval "make ${cmp_verb} -f ${cmp_make} ${cmp_type}"
+          eval "make ${make_verb} -f ${cmp_make} ${cmp_type}"
           err=$?
         popd >/dev/null 2>&1
       fi
@@ -891,10 +605,10 @@ compileOGCMDL() {
           [ -f ${idir}/build/CMakeCache.txt ] && \
             rm -f ${idir}/build/CMakeCache.txt
 
-          eval "cmake -S ${idir} -B ${idir}/build ${CMAKE_FLAGS}"
+          eval "cmake -S ${idir} -B ${idir}/build ${CMAKE_FLAGS} ${cmake_verb}"
           err=$?
           if [ ${err} -eq 0 ]; then
-            eval "cmake --build ${idir}/build"
+            eval "cmake  --build ${idir}/build"
             err=$?
           fi
         fi
@@ -907,9 +621,9 @@ compileOGCMDL() {
       # This part is for the "ogcmdl" program
       if [ -e "${prog_dir}/${cmp_make}" ]; then
         pushd ${prog_dir} >/dev/null 2>&1
-          eval "make ${cmp_verb} -f ${cmp_make} clean"
+          eval "make ${make_verb} -f ${cmp_make} clean"
           err=$?
-          eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make} F90=${PF90}" # We require a parallel compiler here
+          eval "make ${make_verb} ${cmp_mjob} -f ${cmp_make} F90=${PF90}" # We require a parallel compiler here
           err=$?
         popd >/dev/null 2>&1
       fi
@@ -924,3 +638,7 @@ compileOGCMDL() {
 
   return ${err}
 }
+
+##################################################
+### END:: MODELLING SYSTEM BUILD FUNCTIONS
+##################################################

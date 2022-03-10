@@ -14,16 +14,16 @@
 
 # Get the directory where the script is located
 if [[ $(uname -s) == Darwin ]]; then
-#  readonly scrDIR="$(cd "$(dirname "$(greadlink -f -n "${BASH_SOURCE[0]}" )" )" && pwd -P)"
-  readonly scrNAME="$( grealpath -s "${BASH_SOURCE[0]}" )"
+#  readonly scrDIR="$(cd "$(dirname "$(greadlink -f -n "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )" )" && pwd -P)"
+  readonly scrNAME="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
   readonly scrDIR="$(cd "$(dirname "${scrNAME}" )" && pwd -P)"
 else
-#  readonly scrDIR="$(cd "$(dirname "$(readlink -f -n "${BASH_SOURCE[0]}" )" )" && pwd -P)"
-  readonly scrNAME="$( realpath -s "${BASH_SOURCE[0]}" )"
-  readonly scrDIR="$(cd "$(dirname "$(realpath -s "${BASH_SOURCE[0]}")" )" && pwd -P)"
+#  readonly scrDIR="$(cd "$(dirname "$(readlink -f -n "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )" )" && pwd -P)"
+  readonly scrNAME="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+  readonly scrDIR="$(cd "$(dirname "${scrNAME}" )" && pwd -P)"
 fi
 
-lst="${scrDIR}/functions_build ${scrDIR}/scripts/functions_build functions_build "
+lst="${scrDIR:+${scrDIR}/}functions_build ${scrDIR:+${scrDIR}/}scripts/functions_build functions_build"
 funcs=
 for ilst in ${lst}
 do
@@ -35,6 +35,7 @@ done
 
 if [ -n "${funcs:+1}" ]; then
   source "${funcs}"
+  [ $? -ne 0 ] && exit 1
 else
   echo " ### ERROR :: in ${scrNAME}"
   echo "     Cannot load the required file: functions_build"
@@ -94,7 +95,7 @@ fi
 ##########
 # Generate some flags to pass to CMake
 CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=${OPT_TYPE}"
-[ -n "${VERBOSE:+1}" ]         && CMAKE_FLAGS+=" -DCMAKE_VERBOSE_MAKEFILE=TRUE"
+#[ -n "${VERBOSE:+1}" ]         && CMAKE_FLAGS+=" -DCMAKE_VERBOSE_MAKEFILE=TRUE"
 [ -n "${ADD_CMAKE_FLAGS:+1}" ] && CMAKE_FLAGS+=" ${ADD_CMAKE_FLAGS}"
 ##########
 
