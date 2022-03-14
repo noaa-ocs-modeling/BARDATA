@@ -13,6 +13,7 @@ ifeq (,$(filter $(clist), $(MAKECMDGOALS)))
   include compiler_defs.mk
 endif
 
+INSTALLDIR := $(INSTDIR)
 
 SRCS :=  OGCM_DL.f90
 	
@@ -43,6 +44,10 @@ all: $(PROGRAM)
 $(PROGRAM): $(OBJS)
 	$(F90) $(OBJS) $(LDFLAGS) -o $@
 
+install: $(PROGRAM)
+	mkdir -p $(strip $(INSTALLDIR))
+	cp -f $(PROGRAM) $(strip $(INSTALLDIR))/
+
 ### Module Dependencies:
 OGCM_DL.o :  OGCM_DL.f90
 
@@ -53,10 +58,10 @@ OGCM_DL.o :  OGCM_DL.f90
 .PHONY: clean distclean
 
 clean:
-	@rm -f *.o *.mod
+	rm -f *.o *.mod
 
 distclean: clean
-	@rm -f $(PROGRAM)
+	rm -f $(PROGRAM)
 
 ########################################
 ### END:: Miscellaneous Rules

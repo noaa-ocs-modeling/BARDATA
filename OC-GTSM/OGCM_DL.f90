@@ -376,7 +376,7 @@
       ! Get servername
       if (BCServer == 'ftp') then
          ! FTP
-         fileserver = 'ftp://ftp.hycom.org/datasets/'
+         fileserver = '"ftp://ftp.hycom.org/datasets/'
          command    = 'curl ' !'wget '
          options    = ' -s --connect-timeout 30'
       elseif (BCServer == 'ncs') then
