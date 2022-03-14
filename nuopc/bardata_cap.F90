@@ -1,668 +1,678 @@
+!----------------------------------------------------------------
+!               M O D U L E   B A R D A T _ C A P
+!----------------------------------------------------------------
+!> @file bardat_cap.F90
 !>
-!! @mainpage ADCIRC NUOPC Cap to read triangular atm data
-!! @author Saeed Moghimi (moghimis@gmail.com)
-!! @date 15/1/17 Original documentation
-!------------------------------------------------------
-!LOG-----------------
-!
-!
-!
+!>
+!> @brief
+!>
+!>
+!> @details
+!>
+!>
+!> @author Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
+!----------------------------------------------------------------
 
-module BARDATA
+MODULE BarData
 
-  !-----------------------------------------------------------------------------
-  ! BARDATA Component.
-  !-----------------------------------------------------------------------------
-  use mpi
-  use ESMF
-  use NUOPC
-  use NUOPC_Model, &
-    model_routine_SS      => SetServices,    &
-    model_label_SetClock  => label_SetClock, &
-    model_label_Advance   => label_Advance,  &
-    model_label_CheckImport => label_CheckImport, &    
-    model_label_Finalize  => label_Finalize
+  USE MPI
+  USE ESMF
+  USE NUOPC
+  USE NUOPC_Model, &
+    model_routine_SS => SetServices, &
+    model_label_SetClock => label_SetClock, &
+    model_label_Advance => label_Advance, &
+    model_label_CheckImport => label_CheckImport, &
+    model_label_Finalize => label_Finalize
 
-  use Bardat_Mod, only: meshdata
-  use Bardat_Mod, only: create_parallel_esmf_mesh_from_meshdata
-  !use Bardat_Mod, only: atm_int,atm_num,atm_den
-  use Bardat_Mod, only: UWND, VWND, PRES
-  use Bardat_Mod, only: read_config
+  USE Bardat_Mod, only: meshdata
+  USE Bardat_Mod, only: create_parallel_esmf_mesh_from_meshdata
+  !USE Bardat_Mod, only: atm_int,atm_num,atm_den
+  USE Bardat_Mod, only: UWND, VWND, PRES
+  USE Bardat_Mod, only: ReadConfig
 
   !read from netcdf file
-  use Bardat_Mod, only: init_bardata_nc, read_bardata_nc 
-  use Bardat_Mod, only: construct_meshdata_from_netcdf
-  
-  implicit none
-  private
-  
-  public SetServices
-  
-  type fld_list_type
-      character(len=64) :: stdname
-      character(len=64) :: shortname
-      character(len=64) :: unit
-      logical           :: assoc    ! is the farrayPtr associated with internal data
-      real(ESMF_KIND_R8), dimension(:), pointer :: farrayPtr
-  end type fld_list_type
+  USE Bardat_Mod, only: NCDF_InitBarData, NCDF_ReadBarData
+  USE Bardat_Mod, only: construct_meshdata_from_netcdf
 
-  integer,parameter :: fldsMax = 100
-  integer :: fldsToWav_num = 0
-  type (fld_list_type) :: fldsToWav(fldsMax)
-  integer :: fldsFrATM_num = 0
-  type (fld_list_type) :: fldsFrATM(fldsMax)
+  IMPLICIT NONE
 
-  type(meshdata),save  :: mdataInw, mdataOutw
-  integer,save         :: iwind_test = 0 
-  character(len=2048):: info
-  integer :: dbrc     ! temporary debug rc value
+  PRIVATE
+
+  PUBLIC SetServices
+
+  TYPE fld_list_type
+    CHARACTER(LEN = 64) :: stdname
+    CHARACTER(LEN = 64) :: shortname
+    CHARACTER(LEN = 64) :: unit
+    LOGICAL             :: assoc    ! is the farrayPtr associated with internal data
+    REAL(ESMF_KIND_R8), DIMENSION(:), POINTER :: farrayPtr
+  END TYPE fld_list_type
+
+  INTEGER, PARAMETER    :: fldsMax = 100
+  INTEGER               :: fldsToWav_num = 0
+  TYPE(fld_list_type)   :: fldsToWav(fldsMax)
+  INTEGER               :: fldsFrATM_num = 0
+  TYPE(fld_list_type)   :: fldsFrATM(fldsMax)
+
+  TYPE(meshdata), save  :: mdataInw, mdataOutw
+  INTEGER, SAVE         :: iwind_test = 0
+  CHARACTER(LEN = 2048) :: info
+  INTEGER               :: dbrc     ! temporary debug rc value
 
 
-  !-----------------------------------------------------------------------------
-  contains
-  !-----------------------------------------------------------------------------
-  !> NUOPC SetService method is the only public entry point.
-  !! SetServices registers all of the user-provided subroutines
-  !! in the module with the NUOPC layer.
-  !!
-  !! @param model an ESMF_GridComp object
-  !! @param rc return code
-  subroutine SetServices(model, rc)
-    type(ESMF_GridComp)  :: model
-    integer, intent(out) :: rc
+  CONTAINS
+
+
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   S E T S E R V I C E S
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   NUOPC SetService method is the only public entry point.
+  !>
+  !> @details
+  !>   SetServices registers all of the user-provided subroutines
+  !>   in the module with the NUOPC layer.
+  !>
+  !> @param[in]
+  !>   model   An ESMF_GridComp object
+  !> @param[out]
+  !>     rc  Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE SetServices(model, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_GridComp)  :: model
+    INTEGER, INTENT(OUT) :: rc
 
     ! Local Variables
-    type(ESMF_VM)                :: vm
-    character(len=*),parameter   :: subname='(BARDATA:SetServices)'
+    TYPE(ESMF_VM)                 :: vm
+    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:SetServices)'
 
     rc = ESMF_SUCCESS
-    
+
     ! readd config file
-    call read_config()
-    
+    CALL ReadConfig('bar')
+
     ! the NUOPC model component will register the generic methods
-    call NUOPC_CompDerive(model, model_routine_SS, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
-    
+    CALL NUOPC_CompDerive(model, model_routine_SS, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
     ! set entry point for methods that require specific implementation
-    call NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
-      phaseLabelList=(/"IPDv00p1"/), userRoutine=InitializeP1, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
-    call NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
-      phaseLabelList=(/"IPDv00p2"/), userRoutine=InitializeP2, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
-    
+    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
+                                 phaseLabelList = (/"IPDv00p1"/), userRoutine = InitializeP1, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
+                                 phaseLabelList = (/"IPDv00p2"/), userRoutine = InitializeP2, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
     ! attach specializing method(s)
-    !call NUOPC_CompSpecialize(model, specLabel=model_label_SetClock, &
-    !  specRoutine=SetClock, rc=rc)
-    !if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-    !  line=__LINE__, &
-    !  file=__FILE__)) &
-    !  return  ! bail out
-    call NUOPC_CompSpecialize(model, specLabel=model_label_Advance, &
-      specRoutine=ModelAdvance, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    !CALL NUOPC_CompSpecialize(model, specLabel = model_label_SetClock, &
+    !  specRoutine = SetClock, rc = rc)
+    !IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+    !  line = __LINE__, &
+    !  file = __FILE__)) &
+    !  RETURN  ! bail out
+    CALL NUOPC_CompSpecialize(model, specLabel = model_label_Advance, &
+                              specRoutine = ModelAdvance, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    !call NUOPC_CompSpecialize(model, specLabel=model_label_CheckImport, &
-    !  specPhaseLabel="RunPhase1", specRoutine=CheckImport, rc=rc)
-    !if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-    !  line=__LINE__, &
-    !  file=__FILE__)) &
-    !  return  ! bail out
+    !CALL NUOPC_CompSpecialize(model, specLabel = model_label_CheckImport, &
+    !  specPhaseLabel = "RunPhase1", specRoutine = CheckImport, rc = rc)
+    !IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+    !  line = __LINE__, &
+    !  file = __FILE__)) &
+    !  RETURN  ! bail out
 
-    call NUOPC_CompSpecialize(model, specLabel=model_label_Finalize, &
-      specRoutine=BARDATA_model_finalize, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL NUOPC_CompSpecialize(model, specLabel = model_label_Finalize, &
+                              specRoutine = BARDATA_model_finalize, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
+    CALL NCDF_InitBarData()
 
-    call init_bardata_nc()
-    write(info,*) subname,' --- Read bardata info from file --- '
-    !print *,      info
-    call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
+    WRITE (info, *) subname, ' --- Read BARDATA info from file --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-    write(info,*) subname,' --- adc SetServices completed --- '
-    !print *,      subname,' --- adc SetServices completed --- '
-    call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)
-  end subroutine
-  
-  !-----------------------------------------------------------------------------
-    !> First initialize subroutine called by NUOPC.  The purpose
-    !! is to set which version of the Initialize Phase Definition (IPD)
-    !! to use.
-    !!
-    !! For this BARDATA cap, we are using IPDv01.
-    !!
-    !! @param model an ESMF_GridComp object
-    !! @param importState an ESMF_State object for import fields
-    !! @param exportState an ESMF_State object for export fields
-    !! @param clock an ESMF_Clock object
-    !! @param rc return code
+    WRITE (info, *) subname, ' --- adc SetServices completed --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-   subroutine InitializeP1(model, importState, exportState, clock, rc)
-    type(ESMF_GridComp)  :: model
-    type(ESMF_State)     :: importState, exportState
-    type(ESMF_Clock)     :: clock
-    integer, intent(out) :: rc
+  END SUBROUTINE SetServices
+
+!================================================================================
+
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   I N I T I A L I Z E P 1
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Initialization subroutine called by NUOPC.
+  !>
+  !> @details
+  !>   The purpose s to set which version of the
+  !>   Initialize Phase Definition (IPD) to use.
+  !>
+  !> @param[in]
+  !>   model         An ESMF_GridComp object
+  !> @param[in]
+  !>   importState   An ESMF_State object for import fields
+  !> @param[in]
+  !>   exportState   An ESMF_State object for export fields
+  !> @param[in]
+  !>   clock         An ESMF_Clock object
+  !> @param[out]
+  !>   rc            Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE InitializeP1(model, importState, exportState, clock, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_GridComp)  :: model
+    TYPE(ESMF_State)     :: importState, exportState
+    TYPE(ESMF_Clock)     :: clock
+    INTEGER, INTENT(OUT) :: rc
 
     ! Local Variables
-    integer              :: num,i
-    character(len=*),parameter  :: subname='(BARDATA:AdvertiseFields)'
+    INTEGER              :: num, i
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:AdvertiseFields)'
 
     rc = ESMF_SUCCESS
 
-
-    call BARDATA_FieldsSetup()
+    CALL BARDATA_FieldsSetup()
 !
 
-      do num = 1,fldsToWav_num
-          !print *,  "fldsToWav_num  ", fldsToWav_num
-          !print *,  "fldsToWav(num)%shortname  ", fldsToWav(num)%shortname
-          !print *,  "fldsToWav(num)%stdname  ", fldsToWav(num)%stdname
+    DO num = 1, fldsToWav_num
+      !PRINT *,  "fldsToWav_num  ", fldsToWav_num
+      !PRINT *,  "fldsToWav(num)%shortname  ", fldsToWav(num)%shortname
+      !PRINT *,  "fldsToWav(num)%stdname  ", fldsToWav(num)%stdname
 
-          write(info,*) subname,  "fldsToWav(num)%shortname  ", fldsToWav(num)%shortname
-          call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
-     end do
+      WRITE (info, *) subname, "fldsToWav(num)%shortname  ", fldsToWav(num) % shortname
+      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
+    END DO
 
-      call BARDATA_AdvertiseFields(importState, fldsToWav_num, fldsToWav, rc)
-      if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
+    CALL BARDATA_AdvertiseFields(importState, fldsToWav_num, fldsToWav, rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
 !----------------------------------------------------------------
-    do num = 1,fldsFrATM_num
-        !print *,  "fldsFrATM_num  ", fldsFrATM_num
-        !print *,  "fldsFrATM(num)%shortname  ", fldsFrATM(num)%shortname
-        !print *,  "fldsFrATM(num)%stdname  ", fldsFrATM(num)%stdname
-        write(info,*) subname,"fldsFrATM(num)%stdname  ", fldsFrATM(num)%stdname
-        call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
+    DO num = 1, fldsFrATM_num
+      !PRINT *,  "fldsFrATM_num  ", fldsFrATM_num
+      !PRINT *,  "fldsFrATM(num)%shortname  ", fldsFrATM(num)%shortname
+      !PRINT *,  "fldsFrATM(num)%stdname  ", fldsFrATM(num)%stdname
+      WRITE (info, *) subname, "fldsFrATM(num)%stdname  ", fldsFrATM(num) % stdname
+      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 
-    end do
+    END DO
 !
-    call BARDATA_AdvertiseFields(exportState, fldsFrATM_num, fldsFrATM, rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL BARDATA_AdvertiseFields(exportState, fldsFrATM_num, fldsFrATM, rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-        write(info,*) subname,' --- initialization phase 1 completed --- '
-        !print *,      subname,' --- initialization phase 1 completed --- '
-        call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
+    WRITE (info, *) subname, ' --- initialization phase 1 completed --- '
+    !PRINT *,      subname,' --- initialization phase 1 completed --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 !
-  end subroutine
+  END SUBROUTINE InitializeP1
 
+!================================================================================
 
-    !> Advertises a set of fields in an ESMF_State object by calling
-    !! NUOPC_Advertise in a loop.
-    !!
-    !! @param state the ESMF_State object in which to advertise the fields
-    !! @param nfields number of fields
-    !! @param field_defs an array of fld_list_type listing the fields to advertise
-    !! @param rc return code
-    subroutine BARDATA_AdvertiseFields(state, nfields, field_defs, rc)
-        type(ESMF_State), intent(inout)             :: state
-        integer,intent(in)                          :: nfields
-        type(fld_list_type), intent(inout)          :: field_defs(:)
-        integer, intent(inout)                      :: rc
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   I N I T I A L I Z E P 2
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Initialization subroutine called by NUOPC to realize import and export fields.
+  !>
+  !> @details
+  !> The fields to import and export are stored in the fldsTo* and fldsFr*
+  !> arrays, respectively.  Each field entry includes the standard name,
+  !> information about whether the field's grid will be provided by the cap,
+  !> and optionally a pointer to the field's data array. Currently, all fields
+  !> are defined on the same mesh defined by the cap.
+  !>
+  !> @param[in]
+  !>   model         An ESMF_GridComp object
+  !> @param[in]
+  !>   importState   An ESMF_State object for import fields
+  !> @param[in]
+  !>   exportState   An ESMF_State object for export fields
+  !> @param[in]
+  !>   clock         An ESMF_Clock object
+  !> @param[out]
+  !>   rc            Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE InitializeP2(model, importState, exportState, clock, rc)
 
-        integer                                     :: i
-        character(len=*),parameter  :: subname='(BARDATA:BARDATA_AdvertiseFields)'
+    IMPLICIT NONE
 
-        rc = ESMF_SUCCESS
+    TYPE(ESMF_GridComp)  :: model
+    TYPE(ESMF_State)     :: importState, exportState
+    TYPE(ESMF_Clock)     :: clock, driverClock
+    INTEGER, INTENT(OUT) :: rc
 
-        do i = 1, nfields
-          !print *, 'Advertise: '//trim(field_defs(i)%stdname)//'---'//trim(field_defs(i)%shortname)
-          call ESMF_LogWrite('Advertise: '//trim(field_defs(i)%stdname), ESMF_LOGMSG_INFO, rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__)) &
-            return  ! bail out
-
-          call NUOPC_Advertise(state, &
-            standardName=field_defs(i)%stdname, &
-            name=field_defs(i)%shortname, &
-            rc=rc)
-          if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__)) &
-            return  ! bail out
-        enddo
-        !print *,      subname,' --- IN   --- '
-
-    end subroutine BARDATA_AdvertiseFields
-
-
-
-
-   subroutine BARDATA_FieldsSetup
-    integer                     :: rc
-    character(len=*),parameter  :: subname='(BARDATA:BARDATA_FieldsSetup)'
-
-
-    !--------- import fields to BARDATA  -------------
-    
-    !--------- export fields from BARDATA -------------
-    call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="air_pressure_at_sea_level" , shortname= "pmsl" )
-    call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="inst_zonal_wind_height10m" , shortname= "izwh10m" )
-    call fld_list_add(num=fldsFrATM_num, fldlist=fldsFrATM, stdname="inst_merid_wind_height10m" , shortname= "imwh10m" )
-    !
-    write(info,*) subname,' --- Passed--- '
-    !print *,      subname,' --- Passed --- '
-    call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=rc)     
-    end subroutine BARDATA_FieldsSetup
-
-
-    !---------------------------------------------------------------------------------
-
-    subroutine fld_list_add(num, fldlist, stdname, data, shortname, unit)
-        ! ----------------------------------------------
-        ! Set up a list of field information
-        ! ----------------------------------------------
-        integer,             intent(inout)  :: num
-        type(fld_list_type), intent(inout)  :: fldlist(:)
-        character(len=*),    intent(in)     :: stdname
-        real(ESMF_KIND_R8), dimension(:), optional, target :: data
-        character(len=*),    intent(in),optional :: shortname
-        character(len=*),    intent(in),optional :: unit
-
-        ! local variables
-        integer :: rc
-        character(len=*), parameter :: subname='(BARDATA:fld_list_add)'
-
-        ! fill in the new entry
-
-        num = num + 1
-        if (num > fldsMax) then
-          call ESMF_LogWrite(trim(subname)//": ERROR num gt fldsMax "//trim(stdname), &
-            ESMF_LOGMSG_ERROR, line=__LINE__, file=__FILE__, rc=rc)
-          return
-        endif
-
-        fldlist(num)%stdname        = trim(stdname)
-        if (present(shortname)) then
-           fldlist(num)%shortname   = trim(shortname)
-        else
-           fldlist(num)%shortname   = trim(stdname)
-        endif
-
-        if (present(data)) then
-          fldlist(num)%assoc        = .true.
-          fldlist(num)%farrayPtr    => data
-        else
-          fldlist(num)%assoc        = .false.
-        endif
-
-        if (present(unit)) then
-           fldlist(num)%unit        = unit
-        endif
-
-
-        write(info,*) subname,' --- Passed--- '
-        !print *,      subname,' --- Passed --- '
-    end subroutine fld_list_add
-
-
-
-  
-  !-----------------------------------------------------------------------------
-    !> Called by NUOPC to realize import and export fields.
-
-    !! The fields to import and export are stored in the fldsToWav and fldsFrATM
-    !! arrays, respectively.  Each field entry includes the standard name,
-    !! information about whether the field's grid will be provided by the cap,
-    !! and optionally a pointer to the field's data array.  Currently, all fields
-    !! are defined on the same mesh defined by the cap.
-    !! The fields are created by calling BARDATA::adcirc_XXXXXXXXXXXXXXXXXXX.
-    !!
-    !! @param model an ESMF_GridComp object
-    !! @param importState an ESMF_State object for import fields
-    !! @param exportState an ESMF_State object for export fields
-    !! @param clock an ESMF_Clock object
-    !! @param rc return code
-!
-  subroutine InitializeP2(model, importState, exportState, clock, rc)
-    type(ESMF_GridComp)  :: model
-    type(ESMF_State)     :: importState, exportState
-    type(ESMF_Clock)     :: clock, driverClock
-    integer, intent(out) :: rc
-    
-    ! local variables    
-    type(ESMF_TimeInterval) :: BARDATATimeStep
-    type(ESMF_Field)        :: field
+    ! local variables
+    TYPE(ESMF_TimeInterval) :: BARDATATimeStep
+    TYPE(ESMF_Field)        :: field
     !Saeed added
-    type(meshdata)               :: mdataw
-    type(ESMF_Mesh)              :: ModelMesh,meshIn,meshOut
-    type(ESMF_VM)                :: vm
-    type(ESMF_Time)              :: startTime
-    integer                      :: localPet, petCount
-    character(len=*),parameter   :: subname='(BARDATA:RealizeFieldsProvidingGrid)'
+    TYPE(meshdata)               :: mdataw
+    TYPE(ESMF_Mesh)              :: ModelMesh, meshIn, meshOut
+    TYPE(ESMF_VM)                :: vm
+    TYPE(ESMF_Time)              :: startTime
+    INTEGER                      :: localPet, petCount
+    CHARACTER(LEN = *), PARAMETER   :: subname = '(BARDATA:RealizeFieldsProvidingGrid)'
 
     rc = ESMF_SUCCESS
 
-    !print *,"BARDATA ..1.............................................. >> "
+    !PRINT *,"BARDATA ..1.............................................. >> "
     !> \details Get current ESMF VM.
-    call ESMF_VMGetCurrent(vm, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL ESMF_VMGetCurrent(vm, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    !print *,"BARDATA ..2.............................................. >> "
+    !PRINT *,"BARDATA ..2.............................................. >> "
     ! Get query local pet information for handeling global node information
-    call ESMF_VMGet(vm, localPet=localPet, petCount=petCount, rc=rc)
-    ! call ESMF_VMPrint(vm, rc=rc)
+    CALL ESMF_VMGet(vm, localPet = localPet, petCount = petCount, rc = rc)
+    ! CALL ESMF_VMPrint(vm, rc = rc)
 
-    !print *,localPet,"< LOCAL pet, BARDATA ..3.............................................. >> "
+    !PRINT *,localPet,"< LOCAL pet, BARDATA ..3.............................................. >> "
     !! Assign VM to mesh data type.
-    mdataw%vm = vm
+    mdataw % vm = vm
 
-    call construct_meshdata_from_netcdf(mdataw)
-    
-    call create_parallel_esmf_mesh_from_meshdata(mdataw,ModelMesh )
+    CALL construct_meshdata_from_netcdf(mdataw)
+
+    CALL create_parallel_esmf_mesh_from_meshdata(mdataw, ModelMesh)
     !
 
-    call ESMF_MeshWrite(ModelMesh, filename="bardata_mesh.nc", rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL ESMF_MeshWRITE(ModelMesh, filename = "bardata_mesh.nc", rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-
-    meshIn  = ModelMesh ! for now out same as in
+    meshIn = ModelMesh ! for now out same as in
     meshOut = meshIn
 
-    mdataInw  = mdataw
+    mdataInw = mdataw
     mdataOutw = mdataw
 
-    !print *,"..................................................... >> "
-    !print *,"NumNd", mdataw%NumNd
-    !print *,"NumOwnedNd", mdataw%NumOwnedNd
-    !print *,"NumEl", mdataw%NumEl
-    !print *,"NumND_per_El", mdataw%NumND_per_El
-    !print *,"NumOwnedNd mdataOutw", mdataOutw%NumOwnedNd
+    !PRINT *,"..................................................... >> "
+    !PRINT *,"NumNd", mdataw%NumNd
+    !PRINT *,"NumOwnedNd", mdataw%NumOwnedNd
+    !PRINT *,"NumEl", mdataw%NumEl
+    !PRINT *,"NumND_per_El", mdataw%NumND_per_El
+    !PRINT *,"NumOwnedNd mdataOutw", mdataOutw%NumOwnedNd
 
-
-
-    call BARDATA_RealizeFields(importState, meshIn , mdataw, fldsToWav_num, fldsToWav, "BARDATA import", rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
+    CALL BARDATA_RealizeFields(importState, meshIn, mdataw, fldsToWav_num, fldsToWav, "BARDATA import", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 !
-    call BARDATA_RealizeFields(exportState, meshOut, mdataw, fldsFrATM_num, fldsFrATM, "BARDATA export", rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
+    CALL BARDATA_RealizeFields(exportState, meshOut, mdataw, fldsFrATM_num, fldsFrATM, "BARDATA export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-      !Init BARDATA
+    !Init BARDATA
 !    ! query Component for the driverClock
-!    call NUOPC_ModelGet(model, driverClock=driverClock, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-    
+!    CALL NUOPC_ModelGet(model, driverClock = driverClock, rc = rc)
+!    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!      line = __LINE__, &
+!      file = __FILE__)) &
+!      RETURN  ! bail out
+
     ! get the start time and current time out of the clock
-!    call ESMF_ClockGet(driverClock, startTime=startTime, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
+!    CALL ESMF_ClockGet(driverClock, startTime = startTime, rc = rc)
+!    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!      line = __LINE__, &
+!      file = __FILE__)) &
+!      RETURN  ! bail out
 
-!    call read_bardata_nc(startTime)
+!    CALL NCDF_ReadBarData(startTime)
 
-    write(info,*) subname,' --- initialization phase 2 completed --- '
-    !print *,      subname,' --- initialization phase 2 completed --- '
-    call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line=__LINE__, file=__FILE__, rc=dbrc)
-  end subroutine
+    WRITE (info, *) subname, ' --- initialization phase 2 completed --- '
+    !PRINT *,      subname,' --- initialization phase 2 completed --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = dbrc)
 
+  END SUBROUTINE InitializeP2
 
- !> Adds a set of fields to an ESMF_State object.  Each field is wrapped
-  !! in an ESMF_Field object.  Memory is either allocated by ESMF or
-  !! an existing BARDATA pointer is referenced.
-  !!
-  !! @param state the ESMF_State object to add fields to
-  !! @param grid the ESMF_Grid object on which to define the fields
-  !! @param nfields number of fields
-  !! @param field_defs array of fld_list_type indicating the fields to add
-  !! @param tag used to output to the log
-  !! @param rc return code
-  subroutine BARDATA_RealizeFields(state, mesh, mdata, nfields, field_defs, tag, rc)
+!================================================================================
 
-    type(ESMF_State), intent(inout)             :: state
-    type(ESMF_Mesh), intent(in)                 :: mesh
-    type(meshdata)                              :: mdata
-    integer, intent(in)                         :: nfields
-    type(fld_list_type), intent(inout)          :: field_defs(:)
-    character(len=*), intent(in)                :: tag
-    integer, intent(inout)                      :: rc
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   B A R D A T A _ A D V E R T I S E F I E L D S
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Advertises a set of fields in an ESMF_State object.
+  !>
+  !> @details
+  !>   Advertises a set of fields in an ESMF_State object by calling
+  !>   NUOPC_Advertise in a loop.
+  !>
+  !> @param[inout]
+  !>   state         The ESMF_State object in which to advertise the fields
+  !> @param[in]
+  !>   nfields       The number of fields
+  !> @param[inout]
+  !>   field_defs    An array of fld_list_type listing the fields to advertise
+  !> @param[inout]
+  !>   rc            Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE BARDATA_AdvertiseFields(state, nfields, field_defs, rc)
 
+    IMPLICIT NONE
 
-    type(ESMF_Field)                            :: field
-    integer                                     :: i
-    character(len=*),parameter  :: subname='(BARDATA:BARDATA_RealizeFields)'
+    TYPE(ESMF_State), INTENT(INOUT)             :: state
+    INTEGER, INTENT(IN)                          :: nfields
+    TYPE(fld_list_type), INTENT(INOUT)          :: field_defs(:)
+    INTEGER, INTENT(INOUT)                      :: rc
+
+    INTEGER                                     :: i
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_AdvertiseFields)'
 
     rc = ESMF_SUCCESS
 
-    do i = 1, nfields
-        field = ESMF_FieldCreate(name=field_defs(i)%shortname, mesh=mesh, &
-          typekind=ESMF_TYPEKIND_R8, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__, &
-          file=__FILE__)) &
-          return  ! bail out
+    DO i = 1, nfields
+      !PRINT *, 'Advertise: '//TRIM(field_defs(i)%stdname)//'---'//TRIM(field_defs(i)%shortname)
+      CALL ESMF_LogWrite('Advertise: '//TRIM(field_defs(i) % stdname), ESMF_LOGMSG_INFO, rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
 
-        if (NUOPC_IsConnected(state, fieldName=field_defs(i)%shortname)) then
+      CALL NUOPC_Advertise(state, &
+                           standardName = field_defs(i) % stdname, &
+                           name = field_defs(i) % shortname, &
+                           rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+    END DO
+    !PRINT *,      subname,' --- IN   --- '
 
-            call NUOPC_Realize(state, field=field, rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__, &
-              file=__FILE__)) &
-              return  ! bail out
+  END SUBROUTINE BARDATA_AdvertiseFields
 
-            call ESMF_LogWrite(subname // tag // " Field "// field_defs(i)%stdname // " is connected.", &
-              ESMF_LOGMSG_INFO, &
-              line=__LINE__, &
-              file=__FILE__, &
-              rc=dbrc)
-
-            !print *,      subname,' --- Connected --- '
-
-        else
-            call ESMF_LogWrite(subname // tag // " Field "// field_defs(i)%stdname // " is not connected.", &
-              ESMF_LOGMSG_INFO, &
-              line=__LINE__, &
-              file=__FILE__, &
-              rc=dbrc)
-            ! TODO: Initialize the value in the pointer to 0 after proper restart is setup
-            !if(associated(field_defs(i)%farrayPtr) ) field_defs(i)%farrayPtr = 0.0
-            ! remove a not connected Field from State
-            call ESMF_StateRemove(state, (/field_defs(i)%shortname/), rc=rc)
-            if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-              line=__LINE__, &
-              file=__FILE__)) &
-              return  ! bail out
-            !print *,      subname,' --- Not-Connected --- '
-            !print *,      subname," Field ", field_defs(i)%stdname ,' --- Not-Connected --- '
-        endif
-    enddo
-
-        write(info,*) subname,' --- OUT--- '
-        !print *,      subname,' --- OUT --- '
-        call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line=__LINE__, file=__FILE__, rc=rc)
-  end subroutine BARDATA_RealizeFields
-  !-----------------------------------------------------------------------------
+!================================================================================
 
 
-!  subroutine SetClock_mine(model, rc)
-!    type(ESMF_GridComp)  :: model
-!    integer, intent(out) :: rc
-!
-!    ! local variables
-!    type(ESMF_Clock)              :: clock
-!    type(ESMF_TimeInterval)       :: BARDATATimeStep
-!
-!    rc = ESMF_SUCCESS
-!
-!    ! query the Component for its clock, importState and exportState
-!    call NUOPC_ModelGet(model, modelClock=clock, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-!
-!
-!    ! initialize internal clock
-!    ! - on entry, the component clock is a copy of the parent clock
-!    ! - the parent clock is on the slow timescale hwrf timesteps
-!    ! - reset the component clock to have a timeStep that is for adc-bardata of the parent
-!    !   -> timesteps
-!    
-!    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
-!    !TODO: use nint !!?
-!
-!    call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, rc=rc) ! 5 minute steps
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!       line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-!    call NUOPC_CompSetClock(model, clock, BARDATATimeStep, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-!
-!    print *, "BARDATA Timeinterval1 = "
-!    call ESMF_TimeIntervalPrint(BARDATATimeStep, options="string", rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!       line=__LINE__, &
-!        file=__FILE__)) &
-!        return  ! bail out    
-!
-!
-!    ! initialize internal clock
-!    ! - on entry, the component clock is a copy of the parent clock
-!    ! - the parent clock is on the slow timescale hwrf timesteps
-!    ! - reset the component clock to have a timeStep that is for adc-bardata of the parent
-!    !   -> timesteps
-!    
-!    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=     adc_cpl_int, sN=adc_cpl_num, sD=adc_cpl_den, rc=rc) ! 5 minute steps
-!    !TODO: use nint !!?
-!
-!  end subroutine
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   B A R D A T A _ F I E L D S S E T U P
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>
+  !>
+  !> @details
+  !>
+  !>
+  !> @param
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE BARDATA_FieldsSetup
 
-  !-----------------------------------------------------------------------------
-  ! From CICE model uses same clock as parent gridComp
-!  subroutine SetClock(model, rc)
-!    type(ESMF_GridComp)  :: model
-!    integer, intent(out) :: rc
-    
-    ! local variables
-!    type(ESMF_Clock)              :: clock
-!    type(ESMF_TimeInterval)       :: BARDATATimeStep, timestep
-!    character(len=*),parameter  :: subname='(bardata_cap:SetClock)'
+    IMPLICIT NONE
 
-!    rc = ESMF_SUCCESS
-    
-    ! query the Component for its clock, importState and exportState
-!    call ESMF_GridCompGet(model, clock=clock, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-    !call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, sN=atm_num, sD=atm_den, rc=rc) ! 5 minute steps
-    ! tcraig: dt is the cice thermodynamic timestep in seconds
-!    call ESMF_TimeIntervalSet(timestep, s=atm_int, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
+    INTEGER                        :: rc
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_FieldsSetup)'
 
-!    call ESMF_ClockSet(clock, timestep=timestep, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-      
-    ! initialize internal clock
-    ! here: parent Clock and stability timeStep determine actual model timeStep
-!    call ESMF_TimeIntervalSet(BARDATATimeStep, s=atm_int, rc=rc) 
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-!    call NUOPC_CompSetClock(model, clock, BARDATATimeStep, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-    
-!  end subroutine
-    !-----------------------------------------------------------------------------
+    !--------- import fields to BARDATA  -------------
 
-      !> Called by NUOPC to advance the BARDATA model a single timestep >>>>>
-      !! <<<<<<<<<  TODO: check! this is not what we want!!!.
-      !!
-      !! This subroutine copies field data out of the cap import state and into the
-      !! model internal arrays.  Then it calls BARDATA_Run to make a NN timesteps.
-      !! Finally, it copies the updated arrays into the cap export state.
-      !!
-      !! @param model an ESMF_GridComp object
-      !! @param rc return code
-      !-----------------------------------------------------------------------------
-  subroutine ModelAdvance(model, rc)
-    type(ESMF_GridComp)  :: model
-    integer, intent(out) :: rc
+    !--------- export fields from BARDATA -------------
+    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "air_pressure_at_sea_level", shortname = "pmsl")
+    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "inst_zonal_wind_height10m", shortname = "izwh10m")
+    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "inst_merid_wind_height10m", shortname = "imwh10m")
+
+    WRITE (info, *) subname, ' --- Passed--- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
+
+  END SUBROUTINE BARDATA_FieldsSetup
+
+!================================================================================
+
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   F L D _ L I S T _ A D D
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>
+  !>
+  !> @details
+  !>
+  !>
+  !> @param
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE fld_list_add(num, fldlist, stdname, data, shortname, unit)
+
+    IMPLICIT NONE
+
+    ! ----------------------------------------------
+    ! Set up a list of field information
+    ! ----------------------------------------------
+    INTEGER, INTENT(INOUT)  :: num
+    TYPE(fld_list_type), INTENT(INOUT)  :: fldlist(:)
+    CHARACTER(LEN = *), INTENT(IN)     :: stdname
+    REAL(ESMF_KIND_R8), DIMENSION(:), OPTIONAL, target :: data
+    CHARACTER(LEN = *), INTENT(IN), OPTIONAL :: shortname
+    CHARACTER(LEN = *), INTENT(IN), OPTIONAL :: unit
 
     ! local variables
-    type(ESMF_Clock)              :: clock
-    type(ESMF_State)              :: importState, exportState
-    type(ESMF_Time)               :: currTime
-    type(ESMF_TimeInterval)       :: timeStep
-    character(len=*),parameter    :: subname='(BARDATA:ModelAdvance)'
+    INTEGER :: rc
+    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:fld_list_add)'
+
+    ! fill in the new entry
+
+    num = num + 1
+    IF (num > fldsMax) THEN
+      CALL ESMF_LogWrite(TRIM(subname)//": ERROR num gt fldsMax "//TRIM(stdname), &
+                         ESMF_LOGMSG_ERROR, line = __LINE__, file = __FILE__, rc = rc)
+      RETURN
+    END IF
+
+    fldlist(num) % stdname = TRIM(stdname)
+    IF (PRESENT(shortname)) THEN
+      fldlist(num) % shortname = TRIM(shortname)
+    ELSE
+      fldlist(num) % shortname = TRIM(stdname)
+    END IF
+
+    IF (PRESENT(data)) THEN
+      fldlist(num) % assoc = .true.
+      fldlist(num) % farrayPtr => data
+    ELSE
+      fldlist(num) % assoc = .FALSE.
+    END IF
+
+    IF (PRESENT(unit)) THEN
+      fldlist(num) % unit = unit
+    END IF
+
+    WRITE (info, *) subname, ' --- Passed--- '
+
+  END SUBROUTINE fld_list_add
+
+!================================================================================
+
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   B A R D A T A _ R E A L I Z E F I E L D S
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Adds a set of fields to an ESMF_State object.
+  !>
+  !> @details
+  !> Each field is wrapped in an ESMF_Field object.  Memory is either allocated
+  !> by ESMF or an existing BARDATA pointer is referenced.
+  !>
+  !> @param[inout]
+  !>   state         The ESMF_State object to add fields to
+  !> @param[in]
+  !>   mesh/grid     The ESMF_Grid object on which to define the fields
+  !> @param[in]
+  !>   nfields       The number of fields
+  !> @param[inout]
+  !>   field_defs    Array of fld_list_type indicating the fields to add
+  !> @param[in]
+  !>   tag           Used to output to the log
+  !> @param[out]
+  !>   rc            Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE BARDATA_RealizeFields(state, mesh, mdata, nfields, field_defs, tag, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_State), INTENT(INOUT)             :: state
+    TYPE(ESMF_Mesh), INTENT(IN)                 :: mesh
+    TYPE(meshdata)                              :: mdata
+    INTEGER, INTENT(IN)                         :: nfields
+    TYPE(fld_list_type), INTENT(INOUT)          :: field_defs(:)
+    CHARACTER(LEN = *), INTENT(IN)              :: tag
+    INTEGER, INTENT(INOUT)                      :: rc
+
+    TYPE(ESMF_Field)                            :: field
+    INTEGER                                     :: i
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_RealizeFields)'
+
+    rc = ESMF_SUCCESS
+
+    DO i = 1, nfields
+      field = ESMF_FieldCreate(name = field_defs(i) % shortname, mesh = mesh, &
+                               typekind = ESMF_TYPEKIND_R8, rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+
+      IF (NUOPC_IsConnected(state, fieldName = field_defs(i) % shortname)) THEN
+
+        CALL NUOPC_Realize(state, field = field, rc = rc)
+        IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                               line = __LINE__, &
+                               file = __FILE__)) &
+          RETURN  ! bail out
+
+        CALL ESMF_LogWrite(subname//tag//" Field "//field_defs(i) % stdname//" is connected.", &
+                           ESMF_LOGMSG_INFO, &
+                           line = __LINE__, &
+                           file = __FILE__, &
+                           rc = dbrc)
+
+        !PRINT *,      subname,' --- Connected --- '
+
+      ELSE
+        CALL ESMF_LogWrite(subname//tag//" Field "//field_defs(i) % stdname//" is not connected.", &
+                           ESMF_LOGMSG_INFO, &
+                           line = __LINE__, &
+                           file = __FILE__, &
+                           rc = dbrc)
+        ! TODO: Initialize the value in the pointer to 0 after proper restart is setup
+        !IF (associated(field_defs(i)%farrayPtr) ) field_defs(i)%farrayPtr = 0.0
+        ! remove a not connected Field from State
+        CALL ESMF_StateRemove(state, (/field_defs(i) % shortname/), rc = rc)
+        IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                               line = __LINE__, &
+                               file = __FILE__)) &
+          RETURN  ! bail out
+        !PRINT *,      subname,' --- Not-Connected --- '
+        !PRINT *,      subname," Field ", field_defs(i)%stdname ,' --- Not-Connected --- '
+      END IF
+    END DO
+
+    WRITE (info, *) subname, ' --- OUT--- '
+    !PRINT *,      subname,' --- OUT --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
+
+  END SUBROUTINE BARDATA_RealizeFields
+
+!================================================================================
+
+  !-----------------------------------------------------------------------
+  !     S U B R O U T I N E   M O D E L A D V A N C E
+  !-----------------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Called by NUOPC to advance the model by a single timestep.
+  !    TODO: check! this is not what we want.
+  !>
+  !> @details
+  !>   This subroutine copies field data out of the cap import state and into the
+  !>   model internal arrays. Then it calls *_Run to make a NN timesteps.
+  !>   Finally, it copies the updated arrays into the cap export state.
+  !>
+  !> @param[in]
+  !>   model   An ESMF_GridComp object
+  !> @param[out]
+  !>     rc  Return code
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE ModelAdvance(model, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_GridComp)  :: model
+    INTEGER, INTENT(OUT) :: rc
+
+    ! local variables
+    TYPE(ESMF_Clock)              :: clock
+    TYPE(ESMF_State)              :: importState, exportState
+    TYPE(ESMF_Time)               :: currTime
+    TYPE(ESMF_TimeInterval)       :: timeStep
+    CHARACTER(LEN = *), PARAMETER    :: subname = '(BARDATA:ModelAdvance)'
     !tmp vector
-    real(ESMF_KIND_R8), pointer   :: tmp(:)
+    REAL(ESMF_KIND_R8), POINTER   :: tmp(:)
 
     !imports
 
-
     ! exports
-    real(ESMF_KIND_R8), pointer   :: dataPtr_uwnd(:)
-    real(ESMF_KIND_R8), pointer   :: dataPtr_vwnd(:)
-    real(ESMF_KIND_R8), pointer   :: dataPtr_pres(:)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_uwnd(:)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_vwnd(:)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_pres(:)
 
-    type(ESMF_StateItem_Flag)     :: itemType
-    type(ESMF_Mesh)               :: mesh
-    type(ESMF_Field)              :: lfield
-    character(len=128)            :: fldname,timeStr
-    integer                       :: i1
+    TYPE(ESMF_StateItem_Flag)     :: itemType
+    TYPE(ESMF_Mesh)               :: mesh
+    TYPE(ESMF_Field)              :: lfield
+    CHARACTER(LEN = 128)            :: fldname, timeStr
+    INTEGER                       :: i1
     ! local variables for Get methods
-    integer :: YY, MM, DD, H, M, S
+    INTEGER :: YY, MM, DD, H, M, S
 
     rc = ESMF_SUCCESS
     ! query the Component for its clock, importState and exportState
-    call NUOPC_ModelGet(model, modelClock=clock, importState=importState, &
-      exportState=exportState, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL NUOPC_ModelGet(model, modelClock = clock, importState = importState, &
+                        exportState = exportState, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
     ! HERE THE MODEL ADVANCES: currTime -> currTime + timeStep
 
@@ -673,222 +683,217 @@ module BARDATA
     ! will come in by one internal timeStep advanced. This goes until the
     ! stopTime of the internal Clock has been reached.
 
-    call ESMF_ClockPrint(clock, options="currTime", &
-      preString="------>Advancing BARDATA from: ", rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL ESMF_ClockPrint(clock, options = "currTime", &
+                         preString = "------>Advancing BARDATA from: ", rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    call ESMF_ClockGet(clock, currTime=currTime, timeStep=timeStep, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL ESMF_ClockGet(clock, currTime = currTime, timeStep = timeStep, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    call ESMF_TimePrint(currTime + timeStep, &
-      preString="------------------BARDATA-------------> to: ", rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL ESMF_TimePrint(currTime + timeStep, &
+                        preString = "------------------BARDATA-------------> to: ", rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    call ESMF_TimeGet(currTime, yy=YY, mm=MM, dd=DD, h=H, m=M, s=S, rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
+    CALL ESMF_TimeGet(currTime, yy = YY, mm = MM, dd = DD, h = H, m = M, s = S, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    print *      , "BARDATA currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
-    write(info, *) "BARDATA currTime = ", YY, "/", MM, "/", DD," ", H, ":", M, ":", S
-    call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line=__LINE__, file=__FILE__, rc=rc)
-    
-    call ESMF_TimeGet(currTime, timeStringISOFrac=timeStr , rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-        line=__LINE__, &
-        file=__FILE__)) &
-        return  ! bail out
+    PRINT *, "BARDATA currTime = ", YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
+    WRITE (info, *) "BARDATA currTime = ", YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
+
+    CALL ESMF_TimeGet(currTime, timeStringISOFrac = timeStr, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
     !-----------------------------------------
     !   IMPORT
     !-----------------------------------------
-
 
     !-----------------------------------------
     !   EXPORT
     !-----------------------------------------
     !update uwnd, vwnd, pres from nearset time in bardata netcdf file
     !TODO: update file name!!!!
-    call read_bardata_nc(currTime)
+    CALL NCDF_ReadBarData(currTime)
 
     !pack and send exported fields
-    allocate (tmp(mdataOutw%NumOwnedNd))
+    ALLOCATE (tmp(mdataOutw % NumOwnedNd))
 
     ! >>>>> PACK and send UWND
-    !call State_GetFldPtr(ST=exportState,fldname='izwh10m',fldptr=dataPtr_uwnd,rc=rc)
-    call State_GetFldPtr_(ST=exportState,fldname='izwh10m',fldptr=dataPtr_uwnd, &
-      rc=rc,dump=.false.,timeStr=timeStr)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL State_GetFldPtr(ST = exportState, fldname = 'izwh10m', fldptr = dataPtr_uwnd, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
     iwind_test = iwind_test + 1
     !fill only owned nodes for tmp vector
-    do i1 = 1, mdataOutw%NumOwnedNd, 1
-        tmp(i1) = UWND(mdataOutw%owned_to_present_nodes(i1),1)
-        !tmp(i1) = iwind_test  * i1 / 100000.0
-        !tmp(i1) = -3.0
-    end do
+    DO i1 = 1, mdataOutw % NumOwnedNd, 1
+      tmp(i1) = UWND(mdataOutw % owned_to_present_nodes(i1), 1)
+      !tmp(i1) = iwind_test  * i1 / 100000.0
+      !tmp(i1) = -3.0
+    END DO
     !assign to field
     dataPtr_uwnd = tmp
     !----------------------------------------
     ! >>>>> PACK and send VWND
-    call State_GetFldPtr_(ST=exportState,fldname='imwh10m',fldptr=dataPtr_vwnd, &
-      rc=rc,dump=.false.,timeStr=timeStr)
-    !call State_GetFldPtr(ST=exportState,fldname='imwh10m',fldptr=dataPtr_vwnd,rc=rc)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL State_GetFldPtr(ST=exportState, fldname = 'imwh10m', fldptr = dataPtr_vwnd, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
     !fill only owned nodes for tmp vector
-    do i1 = 1, mdataOutw%NumOwnedNd, 1
-        tmp(i1) = VWND(mdataOutw%owned_to_present_nodes(i1),1)
-        !tmp(i1) = 15.0
-    end do
+    DO i1 = 1, mdataOutw % NumOwnedNd, 1
+      tmp(i1) = VWND(mdataOutw % owned_to_present_nodes(i1), 1)
+      !tmp(i1) = 15.0
+    END DO
     !assign to field
     dataPtr_vwnd = tmp
     !----------------------------------------
     ! >>>>> PACK and send PRES
-    call State_GetFldPtr_(ST=exportState,fldname='pmsl',fldptr=dataPtr_pres,&
-      rc=rc,dump=.false.,timeStr=timeStr)
-    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-      line=__LINE__, &
-      file=__FILE__)) &
-      return  ! bail out
+    CALL State_GetFldPtr(ST = exportState, fldname = 'pmsl', fldptr = dataPtr_pres, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
     !fill only owned nodes for tmp vector
-    do i1 = 1, mdataOutw%NumOwnedNd, 1
-        tmp(i1) = PRES(mdataOutw%owned_to_present_nodes(i1),1) 
-        
-        if ( abs(tmp(i1) ).gt. 1e11)  then
-          STOP '  dataPtr_pmsl > mask1 > in BARDATA ! '     
-        end if
-        !tmp(i1) = 1e4
-    end do
+    DO i1 = 1, mdataOutw % NumOwnedNd, 1
+      tmp(i1) = PRES(mdataOutw % owned_to_present_nodes(i1), 1)
+
+      IF (abs(tmp(i1)) > 1e11) THEN
+        STOP '  dataPtr_pmsl > mask1 > in BARDATA ! '
+      END IF
+      !tmp(i1) = 1e4
+    END DO
     !assign to field
     dataPtr_pres = tmp
     !----------------------------------------
 
-
     !! TODO:  not a right thing to do. we need to fix the grid object mask <<<<<<
-    !where(dataPtr_uwnd.gt.3e4) dataPtr_uwnd = 0.0
-    !where(dataPtr_vwnd.gt.3e4) dataPtr_vwnd = 0.0
+    !where(dataPtr_uwnd > 3e4) dataPtr_uwnd = 0.0
+    !where(dataPtr_vwnd > 3e4) dataPtr_vwnd = 0.0
 
-!
-  end subroutine
-!
-  !-----------------------------------------------------------------------
-!-----------------------------------------------------------
+  END SUBROUTINE ModelAdvance
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  !  S U B R O U T I N E   S T A T E _ G E T F L D P T R
+  !----------------------------------------------------------------
+  !  author 
+  !>
   !> Retrieve a pointer to a field's data array from inside an ESMF_State object.
-  !!
-  !! @param ST the ESMF_State object
-  !! @param fldname name of the fields
-  !! @param fldptr pointer to 1D array
-  !! @param rc return code
-  subroutine State_GetFldPtr_(ST, fldname, fldptr, rc, dump,timeStr)
-    type(ESMF_State), intent(in) :: ST
-    character(len=*), intent(in) :: fldname
-    real(ESMF_KIND_R8), pointer, intent(in) :: fldptr(:)
-    integer, intent(out), optional :: rc
-    logical, intent(in), optional  :: dump
-    character(len=128),intent(inout), optional :: timeStr
-    ! local variables
-    type(ESMF_Field) :: lfield
-    integer :: lrc
-    character(len=*),parameter :: subname='(bardata_cap:State_GetFldPtr)'
+  !>
+  !> @param[in]
+  !>   ST         The ESMF_State object
+  !> @param[in]
+  !>   fldName    The name of the fields
+  !> @param[in]
+  !>   fldPtr     A pointer to 1D array
+  !> @param[out]
+  !>   rc         Return code
+  !----------------------------------------------------------------
+  SUBROUTINE State_GetFldPtr(ST, fldname, fldptr, rc, dump, timeStr)
 
-    call ESMF_StateGet(ST, itemName=trim(fldname), field=lfield, rc=lrc)
-    if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
-    call ESMF_FieldGet(lfield, farrayPtr=fldptr, rc=lrc)
-    if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
-    if (present(rc)) rc = lrc
+    IMPLICIT NONE
 
-    if (dump) then
-       if (.not. present(timeStr)) timeStr="_"
-        call ESMF_FieldWrite(lfield, &
-        fileName='field_bardata_'//trim(fldname)//trim(timeStr)//'.nc', &
-        rc=rc,overwrite=.true.)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-          line=__LINE__, &
-          file=__FILE__)) &
-          return  ! bail out
-    endif
-  end subroutine State_GetFldPtr_
-
-
-  !> Retrieve a pointer to a field's data array from inside an ESMF_State object.
-  !!
-  !! @param ST the ESMF_State object
-  !! @param fldname name of the fields
-  !! @param fldptr pointer to 1D array
-  !! @param rc return code
-  subroutine State_GetFldPtr(ST, fldname, fldptr, rc)
-    type(ESMF_State), intent(in) :: ST
-    character(len=*), intent(in) :: fldname
-    real(ESMF_KIND_R8), pointer, intent(in) :: fldptr(:)
-    integer, intent(out), optional :: rc
+    TYPE(ESMF_State), INTENT(IN) :: ST
+    CHARACTER(LEN = *), INTENT(IN) :: fldname
+    REAL(ESMF_KIND_R8), POINTER, INTENT(IN) :: fldptr(:)
+    INTEGER, INTENT(OUT), OPTIONAL :: rc
+    LOGICAL :: dump
+    CHARACTER(LEN = *), INTENT(INOUT), OPTIONAL :: timeStr
 
     ! local variables
-    type(ESMF_Field) :: lfield
-    integer :: lrc
-    character(len=*),parameter :: subname='(BARDATA:State_GetFldPtr)'
+    TYPE(ESMF_Field) :: lfield
+    INTEGER :: lrc
+    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:State_GetFldPtr)'
 
-    call ESMF_StateGet(ST, itemName=trim(fldname), field=lfield, rc=lrc)
-    if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
-    call ESMF_FieldGet(lfield, farrayPtr=fldptr, rc=lrc)
-    if (ESMF_LogFoundError(rcToCheck=lrc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=__FILE__)) return
-    if (present(rc)) rc = lrc
-  end subroutine State_GetFldPtr
+    CALL ESMF_StateGet(ST, itemName = TRIM(fldname), field = lfield, rc = lrc)
+    IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
+    CALL ESMF_FieldGet(lfield, farrayPtr = fldptr, rc = lrc)
+    IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
+    IF (PRESENT(rc)) rc = lrc
 
-  subroutine CheckImport(model, rc)
-    type(ESMF_GridComp)   :: model
-    integer, intent(out)  :: rc
-    
+    IF (dump) THEN
+      IF (.NOT. PRESENT(timeStr)) timeStr = "_"
+      CALL ESMF_FieldWRITE(lfield, &
+                           fileName='moddata_field_'//TRIM(fldname)//TRIM(timeStr)//'.nc', &
+                           rc = rc, overwrite = .TRUE.)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+    END IF
+
+  END SUBROUTINE State_GetFldPtr
+
+!================================================================================
+
+  SUBROUTINE CheckImport(model, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_GridComp)   :: model
+    INTEGER, INTENT(OUT)  :: rc
+
     ! This is the routine that enforces correct time stamps on import Fields
-    
+
     ! local variables
-    type(ESMF_Clock)        :: driverClock
-    type(ESMF_Time)         :: startTime, currTime
-    type(ESMF_State)        :: importState
-    type(ESMF_Field)        :: field
-    logical                 :: atCorrectTime
+    TYPE(ESMF_Clock)        :: driverClock
+    TYPE(ESMF_Time)         :: startTime, currTime
+    TYPE(ESMF_State)        :: importState
+    TYPE(ESMF_Field)        :: field
+    LOGICAL                 :: atCorrectTime
 
     rc = ESMF_SUCCESS
-    return
+    RETURN
 
-    
 !    ! query Component for the driverClock
-!    call NUOPC_ModelGet(model, driverClock=driverClock, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-!    
+!    CALL NUOPC_ModelGet(model, driverClock = driverClock, rc = rc)
+!    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!      line = __LINE__, &
+!      file = __FILE__)) &
+!      RETURN  ! bail out
+!
 !    ! get the start time and current time out of the clock
-!    call ESMF_ClockGet(driverClock, startTime=startTime, &
-!      currTime=currTime, rc=rc)
-!    if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-!      line=__LINE__, &
-!      file=__FILE__)) &
-!      return  ! bail out
-    
-   
-  end subroutine
+!    CALL ESMF_ClockGet(driverClock, startTime = startTime, &
+!      currTime = currTime, rc = rc)
+!    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!      line = __LINE__, &
+!      file = __FILE__)) &
+!      RETURN  ! bail out
 
+  END SUBROUTINE CheckImport
+
+!================================================================================
 
   !-----------------------------------------------------------------------
   !> Called by NUOPC at the end of the run to clean up.  The cap does
@@ -896,37 +901,41 @@ module BARDATA
   !!
   !! @param gcomp the ESMF_GridComp object
   !! @param rc return code
-    subroutine BARDATA_model_finalize(gcomp, rc)
+  SUBROUTINE BARDATA_model_finalize(gcomp, rc)
 
-        ! input arguments
-        type(ESMF_GridComp)  :: gcomp
-        integer, intent(out) :: rc
+    IMPLICIT NONE
 
-        ! local variables
-        type(ESMF_Clock)     :: clock
-        type(ESMF_Time)                        :: currTime
-        character(len=*),parameter  :: subname='(BARDATA:bardata_model_finalize)'
+    ! input arguments
+    TYPE(ESMF_GridComp)  :: gcomp
+    INTEGER, INTENT(OUT) :: rc
 
-        rc = ESMF_SUCCESS
+    ! local variables
+    TYPE(ESMF_Clock)     :: clock
+    TYPE(ESMF_Time)                        :: currTime
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:bardata_model_finalize)'
 
-        write(info,*) subname,' --- finalize called --- '
-        call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
+    rc = ESMF_SUCCESS
 
-        call NUOPC_ModelGet(gcomp, modelClock=clock, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__)) &
-            return  ! bail out
+    WRITE (info, *) subname, ' --- finalize called --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 
-        call ESMF_ClockGet(clock, currTime=currTime, rc=rc)
-        if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
-            line=__LINE__, &
-            file=__FILE__)) &
-            return  ! bail out
+    CALL NUOPC_ModelGet(gcomp, modelClock = clock, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-        write(info,*) subname,' --- finalize completed --- '
-        call ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc=dbrc)
+    CALL ESMF_ClockGet(clock, currTime = currTime, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
 
-    end subroutine BARDATA_model_finalize
+    WRITE (info, *) subname, ' --- finalize completed --- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 
-end module
+  END SUBROUTINE BARDATA_model_finalize
+
+!================================================================================
+
+END MODULE BarData

@@ -8,19 +8,15 @@
 
 SHELL := /bin/bash
 
+PWDDIR := $(shell pwd)
+
 clist := clean distclean
 ifeq (,$(filter $(clist), $(MAKECMDGOALS)))
   include compiler_defs.mk
 endif
 
-
-PWDDIR := $(shell pwd)
-
 # Coming from NEMS/src/incmake/component_BARDATA.mk (option for this Makefile)
 INSTALLDIR := $(INSTDIR)
-ifeq ($(wildcard $(INSTALLDIR)),)
-  $(error INSTDIR is not a valid directory. Please define INSTDIR prior running this Makefile)
-endif
 
 MAKEFILE   := bardata.mk
 
@@ -91,7 +87,7 @@ vars:
 # -----------------------------------------------------------------------------
 
 ### Module Dependencies:
-bardata.o:   bardata_mod.o 
+bardata_cap.o:   bardata_mod.o 
 
 
 ########################################
