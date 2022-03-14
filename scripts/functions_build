@@ -227,8 +227,9 @@ ParseArgs()
           if [ $? -eq 0 ]; then
             __MY_VERBOSE=b # This is suitable for GNU's make
             if [ "X${opt_arg}" != "X" ]; then
-            __MY_VERBOSE="$( echo "$( strTrim "${opt_arg}" 2 )" | sed 's/[[:space:]]/,/g' )"
+              __MY_VERBOSE="${opt_arg}"
             fi
+            __MY_VERBOSE="$( getMakeVerbosity "${__MY_VERBOSE}" )"
           fi
         ;;
       -h | -help | --h | --help )
@@ -419,7 +420,7 @@ getEnvVars()
   PARMAKE=${MY_PARMAKE}
   export PARMAKE=${PARMAKE:-1}
 
-  VERBOSE="$( toLOWER "${MY_VERBOSE}" )"
+  VERBOSE="${MY_VERBOSE}"
   export VERBOSE=${VERBOSE:-}
 
   INSTALL_DIR=${MY_INSTALL_DIR}
@@ -554,25 +555,29 @@ compileNUOPC() {
 ###========================================
 compileOGCMDL() {
   local cmp_type cmp_make cmp_verb cmp_mjob
-  local cmake_verb make_verb
+  local cmp_verb cmake_verb cmake_flags
   local err=0
 
   local prog_lib_dirs="datetime-fortran GSW-Fortran"
   local prog_dir="OC-GTSM"
 
 
-  [ $# -eq 0 ] && return ${err}
+  if [ $# -eq 0 ]; then
+    err=1
+    return ${err}
+  fi
+
 
   cmp_type="$( toLOWER "${1}" )"
   cmp_make=Makefile
   cmp_mjob="${PARMAKE:+-j ${PARMAKE}}"
-
-
-  make_verb="$( getGNUMakeVerbosity "${VERBOSE}" )"
-  make_verb="${make_verb:+--debug=${make_verb}}"
+  cmp_verb="${VERBOSE:+--debug=${VERBOSE}}"
 
   cmake_verb="${VERBOSE:+-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON}"
 
+  # Generate some flags to pass to CMake
+  cmake_flags="-DCMAKE_BUILD_TYPE=${OPT_TYPE:-Release} -DCMAKE_Fortran_COMPILER=${F90}"
+  [ -n "${ADD_CMAKE_FLAGS:+1}" ] && cmake_flags+=" ${ADD_CMAKE_FLAGS}"
 
   case "${cmp_type}" in
     "clean"|"distclean" )
@@ -592,7 +597,7 @@ compileOGCMDL() {
       if [ -e "${prog_dir}/${cmp_make}" ]; then
         pushd ${prog_dir} >/dev/null 2>&1
           echo "compileOGCMDL :: Cleaning: in ${prog_dir}"
-          eval "make ${make_verb} -f ${cmp_make} ${cmp_type}"
+          eval "make ${cmp_verb} -f ${cmp_make} ${cmp_type}"
           err=$?
         popd >/dev/null 2>&1
       fi
@@ -605,7 +610,7 @@ compileOGCMDL() {
           [ -f ${idir}/build/CMakeCache.txt ] && \
             rm -f ${idir}/build/CMakeCache.txt
 
-          eval "cmake -S ${idir} -B ${idir}/build ${CMAKE_FLAGS} ${cmake_verb}"
+          eval "cmake -S ${idir} -B ${idir}/build ${cmake_flags} ${cmake_verb}"
           err=$?
           if [ ${err} -eq 0 ]; then
             eval "cmake  --build ${idir}/build"
@@ -621,10 +626,14 @@ compileOGCMDL() {
       # This part is for the "ogcmdl" program
       if [ -e "${prog_dir}/${cmp_make}" ]; then
         pushd ${prog_dir} >/dev/null 2>&1
-          eval "make ${make_verb} -f ${cmp_make} clean"
+          eval "make ${cmp_verb} -f ${cmp_make} clean"
           err=$?
-          eval "make ${make_verb} ${cmp_mjob} -f ${cmp_make} F90=${PF90}" # We require a parallel compiler here
+          eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make} F90=${PF90}" # We require a parallel compiler here
           err=$?
+
+          if [ ${err} -eq 0 ] && [ -n "${INSTALL_DIR:+1}" ]; then
+            eval "make ${cmp_verb} -f ${cmp_make} INSTDIR=${INSTALL_DIR} install"
+          fi
         popd >/dev/null 2>&1
       fi
       if [ ${err} -eq 0 ]; then

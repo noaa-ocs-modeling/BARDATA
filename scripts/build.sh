@@ -91,20 +91,10 @@ if [ ${CLEAN:-0} -ne 0 ]; then
   fi
 fi
 
-
-##########
-# Generate some flags to pass to CMake
-CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=${OPT_TYPE}"
-#[ -n "${VERBOSE:+1}" ]         && CMAKE_FLAGS+=" -DCMAKE_VERBOSE_MAKEFILE=TRUE"
-[ -n "${ADD_CMAKE_FLAGS:+1}" ] && CMAKE_FLAGS+=" ${ADD_CMAKE_FLAGS}"
-##########
-
-
 for icomp in ${COMPONENT}
 do
- [ "${icomp}" == "OGCMDL" ] &&  compileOGCMDL compile
- [ "${icomp}" == "NUOPC"  ] &&  compileNUOPC compile
+  [ "${icomp}" == "OGCMDL" ] && compileOGCMDL compile
+  [ "${icomp}" == "NUOPC"  ] &&  compileNUOPC compile
 done
-
 
 exit 0
