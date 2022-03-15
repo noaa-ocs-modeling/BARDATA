@@ -393,7 +393,7 @@
 
       filegrid = 'GLBv0.08/'
 
-      if (TimeOff%getYear().ge.2018) then
+      if (TimeOff%getYear().ge.2019) then
          ! GOFS 3.1 analysis
          filegrid = 'GLBy0.08/'
          expt = 'expt_93.0'
@@ -401,8 +401,13 @@
          if (BCServer == 'ftp') then
             expt = trim(expt)//'/data/hindcasts/'//yyyy
          endif
+      elseif (TimeOff%getYear().eq.2018) then
+         expt = 'expt_93.0'
+         filemid = '/hycom_glbv_930_'
+         if (BCServer == 'ftp') then
+            expt = trim(expt)//'/data/hindcasts/'//yyyy
+         endif
       elseif (TimeOff%getYear().eq.2017) then
-         ! GOFS 3.1 analysis
          if (TimeOff%getMonth().ge.10) then
             expt = 'expt_92.9'
             filemid = '/hycom_glbv_929_'
@@ -513,34 +518,31 @@
 #ifdef __INTEL_COMPILER
             resOK = systemqq(command//trim(Fullpath)//trim(options)//  &
                        ' -I -L -o filesize'//trim(adjustl(hhh))//'.txt')
+            resINT = getlasterrorqq()
 #else
             resOK = .false.
             resINT = system(command//trim(Fullpath)//trim(options)//  &
                        ' -I -L -o filesize'//trim(adjustl(hhh))//'.txt')
             if (resINT == 0) resOK = .true.
 #endif
-
-            if (.not.resOK) then
 ! PV - 02/16/2022
-#ifdef __INTEL_COMPILER
-               resINT = getlasterrorqq()
-#else
-               resINT = ierrno()
-#endif
-               write(6,*) 'Error: ',resINT,myProc
+            if (.not. resOK) then
+              write(6,*) 'Error: ', resINT, myProc
+            else
+              open(newunit=fid,                                     &
+                   file='filesize'//trim(adjustl(hhh))//'.txt',     &
+                   status='old',action='read')
+                 do ! read until eof
+                    read(fid,'(A280)',iostat=stat) line
+                    if (stat.ne.0) exit
+                    if (line(1:15).eq.'Content-Length:') then
+                       read(line(17:280),*) FSizeTrue
+                       exit
+                    endif
+                 end do
+              close(fid)
             endif
-            open(newunit=fid,                                     &
-                 file='filesize'//trim(adjustl(hhh))//'.txt',     &
-                 status='old',action='read')
-               do ! read until eof
-                  read(fid,'(A280)',iostat=stat) line
-                  if (stat.ne.0) exit
-                  if (line(1:15).eq.'Content-Length:') then
-                     read(line(17:280),*) FSizeTrue
-                     exit
-                  endif
-               enddo
-            close(fid)
+            
             if (FSizeTrue.eq.0) then
                ! Non-existant file. 
                ! Try forecast
@@ -575,6 +577,7 @@
 #ifdef __INTEL_COMPILER
             resOK = systemqq(command//trim(Fullpath)//trim(options)//&
                        ' -o '//trim(BC3D_Name))
+            resINT = getlasterrorqq()
 #else
          resOK = .false.
          resINT = system(command//trim(Fullpath)//trim(options)//&
@@ -597,7 +600,7 @@
                     // 'Try again after 5 s'
             call sleep(5) ; iter = iter + 1; 
          endif
-      enddo
+      end do
       if (.not.resOK) then
          write(6,*) 'Error in downloading GOFS 3.1 NetCDF.'
          call MPI_Abort(MPI_Comm_World,0,ierr) 
