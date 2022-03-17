@@ -25,40 +25,42 @@ MODULE BarData
     model_label_CheckImport => label_CheckImport, &
     model_label_Finalize => label_Finalize
 
-  USE Bardat_Mod, only: meshdata
-  USE Bardat_Mod, only: create_parallel_esmf_mesh_from_meshdata
-  !USE Bardat_Mod, only: atm_int,atm_num,atm_den
-  USE Bardat_Mod, only: UWND, VWND, PRES
-  USE Bardat_Mod, only: ReadConfig
-
-  !read from netcdf file
-  USE Bardat_Mod, only: NCDF_InitBarData, NCDF_ReadBarData
-  USE Bardat_Mod, only: construct_meshdata_from_netcdf
+  USE Bardat_Mod
 
   IMPLICIT NONE
 
   PRIVATE
 
+
+  !-----------------------------------------------------------------------
+  ! I N T E R F A C E S
+  !-----------------------------------------------------------------------
+  INTERFACE State_GetFldPtr
+    MODULE PROCEDURE State_GetFldPtr
+    MODULE PROCEDURE State_GetFldPtr2D
+  END INTERFACE State_GetFldPtr
+
   PUBLIC SetServices
 
-  TYPE fld_list_type
-    CHARACTER(LEN = 64) :: stdname
-    CHARACTER(LEN = 64) :: shortname
+  TYPE FldList_T
+    CHARACTER(LEN = 64) :: stdName
+    CHARACTER(LEN = 64) :: shortName
     CHARACTER(LEN = 64) :: unit
     LOGICAL             :: assoc    ! is the farrayPtr associated with internal data
+    LOGICAL             :: connected !++ GML 2011-11-11 for judge if the pressure is connected or not
     REAL(ESMF_KIND_R8), DIMENSION(:), POINTER :: farrayPtr
-  END TYPE fld_list_type
+  END TYPE FldList_T
 
-  INTEGER, PARAMETER    :: fldsMax = 100
-  INTEGER               :: fldsToWav_num = 0
-  TYPE(fld_list_type)   :: fldsToWav(fldsMax)
-  INTEGER               :: fldsFrATM_num = 0
-  TYPE(fld_list_type)   :: fldsFrATM(fldsMax)
+  INTEGER, PARAMETER :: maxFlds = 100
+  INTEGER            :: fldsToWav_num = 0
+  TYPE(FldList_T)    :: fldsToWav(maxFlds)
+  INTEGER            :: numFldsFromBAR = 0
+  TYPE(FldList_T)    :: fldsFromBAR(maxFlds)
 
-  TYPE(meshdata), save  :: mdataInw, mdataOutw
-  INTEGER, SAVE         :: iwind_test = 0
-  CHARACTER(LEN = 2048) :: info
-  INTEGER               :: dbrc     ! temporary debug rc value
+  TYPE(GridData_T), SAVE :: mDataInw, mDataOutw
+  INTEGER, SAVE          :: iwind_test = 0
+  CHARACTER(LEN = 2048)  :: info
+  INTEGER                :: dbrc     ! temporary debug rc value
 
 
   CONTAINS
@@ -90,12 +92,12 @@ MODULE BarData
 
     ! Local Variables
     TYPE(ESMF_VM)                 :: vm
-    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:SetServices)'
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':SetServices)'
 
     rc = ESMF_SUCCESS
 
-    ! readd config file
-    CALL ReadConfig('bar')
+    ! Read config file
+    CALL ReadConfig(MODEL_PRFX)
 
     ! the NUOPC model component will register the generic methods
     CALL NUOPC_CompDerive(model, model_routine_SS, rc = rc)
@@ -105,16 +107,19 @@ MODULE BarData
       RETURN  ! bail out
 
     ! set entry point for methods that require specific implementation
-    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
-                                 phaseLabelList = (/"IPDv00p1"/), userRoutine = InitializeP1, rc = rc)
+    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE,   &
+                                 phaseLabelList = (/"IPDv00p1"/), &
+                                 userRoutine = InitializeP1, rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
+                           line = __LINE__,  &
                            file = __FILE__)) &
       RETURN  ! bail out
-    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE, &
-                                 phaseLabelList = (/"IPDv00p2"/), userRoutine = InitializeP2, rc = rc)
+
+    CALL NUOPC_CompSetEntryPoint(model, ESMF_METHOD_INITIALIZE,   &
+                                 phaseLabelList = (/"IPDv00p2"/), &
+                                 userRoutine = InitializeP2, rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
+                           line = __LINE__,  &
                            file = __FILE__)) &
       RETURN  ! bail out
 
@@ -140,18 +145,15 @@ MODULE BarData
     !  RETURN  ! bail out
 
     CALL NUOPC_CompSpecialize(model, specLabel = model_label_Finalize, &
-                              specRoutine = BARDATA_model_finalize, rc = rc)
+                              specRoutine = ModelFinalize, rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    CALL NCDF_InitBarData()
+    CALL InitBarData()
 
-    WRITE (info, *) subname, ' --- Read BARDATA info from file --- '
-    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
-
-    WRITE (info, *) subname, ' --- adc SetServices completed --- '
+    WRITE (info, *) subname, ' --- ' // TRIM(ADJUSTL(MODEL_NAME)) // ' SetServices completed --- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
   END SUBROUTINE SetServices
@@ -192,48 +194,30 @@ MODULE BarData
 
     ! Local Variables
     INTEGER              :: num, i
-    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:AdvertiseFields)'
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':InitializeP1)'
 
     rc = ESMF_SUCCESS
 
-    CALL BARDATA_FieldsSetup()
-!
+    CALL FieldsSetup()
 
-    DO num = 1, fldsToWav_num
-      !PRINT *,  "fldsToWav_num  ", fldsToWav_num
-      !PRINT *,  "fldsToWav(num)%shortname  ", fldsToWav(num)%shortname
-      !PRINT *,  "fldsToWav(num)%stdname  ", fldsToWav(num)%stdname
+!   DO num = 1, numFldsFromBAR
+!     !PRINT *,  "numFldsFromBAR  ", numFldsFromBAR
+!     !PRINT *,  "fldsFromBAR(num)%shortName  ", fldsFromBAR(num)%shortName
+!     !PRINT *,  "fldsFromBAR(num)%stdName  ", fldsFromBAR(num)%stdName
+!     WRITE (info, *) subname, "fldsFromBAR(num)%stdName  ", fldsFromBAR(num) % stdName
+!     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 
-      WRITE (info, *) subname, "fldsToWav(num)%shortname  ", fldsToWav(num) % shortname
-      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
-    END DO
+!   END DO
 
-    CALL BARDATA_AdvertiseFields(importState, fldsToWav_num, fldsToWav, rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
-
-!----------------------------------------------------------------
-    DO num = 1, fldsFrATM_num
-      !PRINT *,  "fldsFrATM_num  ", fldsFrATM_num
-      !PRINT *,  "fldsFrATM(num)%shortname  ", fldsFrATM(num)%shortname
-      !PRINT *,  "fldsFrATM(num)%stdname  ", fldsFrATM(num)%stdname
-      WRITE (info, *) subname, "fldsFrATM(num)%stdname  ", fldsFrATM(num) % stdname
-      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
-
-    END DO
-!
-    CALL BARDATA_AdvertiseFields(exportState, fldsFrATM_num, fldsFrATM, rc)
+    CALL AdvertiseFields(exportState, numFldsFromBAR, fldsFromBAR, rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
     WRITE (info, *) subname, ' --- initialization phase 1 completed --- '
-    !PRINT *,      subname,' --- initialization phase 1 completed --- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
-!
+
   END SUBROUTINE InitializeP1
 
 !================================================================================
@@ -249,8 +233,7 @@ MODULE BarData
   !> The fields to import and export are stored in the fldsTo* and fldsFr*
   !> arrays, respectively.  Each field entry includes the standard name,
   !> information about whether the field's grid will be provided by the cap,
-  !> and optionally a pointer to the field's data array. Currently, all fields
-  !> are defined on the same mesh defined by the cap.
+  !> and optionally a pointer to the field's data array.
   !>
   !> @param[in]
   !>   model         An ESMF_GridComp object
@@ -274,70 +257,118 @@ MODULE BarData
     INTEGER, INTENT(OUT) :: rc
 
     ! local variables
-    TYPE(ESMF_TimeInterval) :: BARDATATimeStep
-    TYPE(ESMF_Field)        :: field
+    TYPE(ESMF_Field)              :: field
     !Saeed added
-    TYPE(meshdata)               :: mdataw
-    TYPE(ESMF_Mesh)              :: ModelMesh, meshIn, meshOut
-    TYPE(ESMF_VM)                :: vm
-    TYPE(ESMF_Time)              :: startTime
-    INTEGER                      :: localPet, petCount
-    CHARACTER(LEN = *), PARAMETER   :: subname = '(BARDATA:RealizeFieldsProvidingGrid)'
+    TYPE(GridData_T)              :: mData, mDataY, mDataYY, mDataYYY
+    TYPE(ESMF_Grid)               :: modelGrid, modelGridY, modelGridYY, modelGridYYY
+    TYPE(ESMF_VM)                 :: vm
+    TYPE(ESMF_Time)               :: startTime
+    INTEGER                       :: localPet, petCount
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':InitializeP2)'
 
     rc = ESMF_SUCCESS
 
-    !PRINT *,"BARDATA ..1.............................................. >> "
-    !> \details Get current ESMF VM.
+    ! Get current ESMF VM.
     CALL ESMF_VMGetCurrent(vm, rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    !PRINT *,"BARDATA ..2.............................................. >> "
     ! Get query local pet information for handeling global node information
     CALL ESMF_VMGet(vm, localPet = localPet, petCount = petCount, rc = rc)
     ! CALL ESMF_VMPrint(vm, rc = rc)
 
-    !PRINT *,localPet,"< LOCAL pet, BARDATA ..3.............................................. >> "
-    !! Assign VM to mesh data type.
-    mdataw % vm = vm
+    ! Assign VM to grid data type.
+    mData % vm = vm
+    mDataY % vm = vm
+    mDataYY % vm = vm
+    mDataYYY % vm = vm
 
-    CALL construct_meshdata_from_netcdf(mdataw)
+    ! lon: lon(NX), lat: lat(NY), lonC: lonC(NX), latC: latC(NYY), lats: latS(NYYY)
+    CALL construct_griddata_from_netcdf(NX, NY, mData)
+    CALL construct_griddata_from_netcdf(NX, NY, mDataY)
+    CALL construct_griddata_from_netcdf(NX, NYY, mDataYY)
+    CALL construct_griddata_from_netcdf(NX, NYYY, mDataYYY)
 
-    CALL create_parallel_esmf_mesh_from_meshdata(mdataw, ModelMesh)
-    !
-
-    CALL ESMF_MeshWRITE(ModelMesh, filename = "bardata_mesh.nc", rc = rc)
+    CALL create_parallel_esmf_grid_from_griddata(lon, lat, mData, modelGrid)
+    CALL create_parallel_esmf_grid_from_griddata(lonC, lat, mDataY, modelGridY)
+    CALL create_parallel_esmf_grid_from_griddata(lon, latC, mDataYY, modelGridYY)
+    CALL create_parallel_esmf_grid_from_griddata(lon, latS, mDataYYY, modelGridYYY)
+                                      
+    !==== BPGX
+    CALL RealizeAField(exportState, modelGridY, numFldsFromBAR, fldsFromBAR, 'bpgx', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    !==== BPGY
+    CALL RealizeAField(exportState, modelGridYY, numFldsFromBAR, fldsFromBAR, 'bpgy', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    !==== SigTS
+    CALL RealizeAField(exportState, modelGrid, numFldsFromBAR, fldsFromBAR, 'sigts', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    !==== MLD
+    CALL RealizeAField(exportState, modelGrid, numFldsFromBAR, fldsFromBAR, 'mld', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    !==== NB
+    CALL RealizeAField(exportState, modelGrid, numFldsFromBAR, fldsFromBAR, 'nb', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+    !==== NM
+    CALL RealizeAField(exportState, modelGrid, numFldsFromBAR, fldsFromBAR, 'nm', &
+                       TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    meshIn = ModelMesh ! for now out same as in
-    meshOut = meshIn
+!   !==== KE
+!   CALL RealizeAField(exportState, modelGrid, numFldsFromBAR, fldsFromBAR, 'ke', &
+!                      TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+!   !==== CDisp
+!   CALL RealizeAField(exportState, modelGridYYY, numFldsFromBAR, fldsFromBAR, 'cdisp', &
+!                      TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+!   !==== DispX
+!   CALL RealizeAField(exportState, modelGridYYY, numFldsFromBAR, fldsFromBAR, 'dispx', &
+!                      TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+!   !==== DispY
+!   CALL RealizeAField(exportState, modelGridYYY, numFldsFromBAR, fldsFromBAR, 'dispy', &
+!                      TRIM(ADJUSTL(MODEL_NAME)) // " export", rc)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
 
-    mdataInw = mdataw
-    mdataOutw = mdataw
 
-    !PRINT *,"..................................................... >> "
-    !PRINT *,"NumNd", mdataw%NumNd
-    !PRINT *,"NumOwnedNd", mdataw%NumOwnedNd
-    !PRINT *,"NumEl", mdataw%NumEl
-    !PRINT *,"NumND_per_El", mdataw%NumND_per_El
-    !PRINT *,"NumOwnedNd mdataOutw", mdataOutw%NumOwnedNd
-
-    CALL BARDATA_RealizeFields(importState, meshIn, mdataw, fldsToWav_num, fldsToWav, "BARDATA import", rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
-!
-    CALL BARDATA_RealizeFields(exportState, meshOut, mdataw, fldsFrATM_num, fldsFrATM, "BARDATA export", rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
 
     !Init BARDATA
 !    ! query Component for the driverClock
@@ -354,18 +385,20 @@ MODULE BarData
 !      file = __FILE__)) &
 !      RETURN  ! bail out
 
-!    CALL NCDF_ReadBarData(startTime)
+!    CALL ReadBarData(startTime)
 
     WRITE (info, *) subname, ' --- initialization phase 2 completed --- '
-    !PRINT *,      subname,' --- initialization phase 2 completed --- '
-    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = dbrc)
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, &
+                       line = __LINE__, &
+                       file = __FILE__, &
+                       rc = dbrc)
 
   END SUBROUTINE InitializeP2
 
 !================================================================================
 
   !-----------------------------------------------------------------------
-  !     S U B R O U T I N E   B A R D A T A _ A D V E R T I S E F I E L D S
+  !     S U B R O U T I N E   A D V E R T I S E F I E L D S
   !-----------------------------------------------------------------------
   !>
   !> @brief
@@ -378,53 +411,50 @@ MODULE BarData
   !> @param[inout]
   !>   state         The ESMF_State object in which to advertise the fields
   !> @param[in]
-  !>   nfields       The number of fields
+  !>   nFields       The number of fields
   !> @param[inout]
-  !>   field_defs    An array of fld_list_type listing the fields to advertise
+  !>   fieldDefs     An array of FldList_T listing the fields to advertise
   !> @param[inout]
   !>   rc            Return code
   !>
   !----------------------------------------------------------------
-  SUBROUTINE BARDATA_AdvertiseFields(state, nfields, field_defs, rc)
+  SUBROUTINE AdvertiseFields(state, nFields, fieldDefs, rc)
 
     IMPLICIT NONE
 
-    TYPE(ESMF_State), INTENT(INOUT)             :: state
-    INTEGER, INTENT(IN)                          :: nfields
-    TYPE(fld_list_type), INTENT(INOUT)          :: field_defs(:)
-    INTEGER, INTENT(INOUT)                      :: rc
+    TYPE(ESMF_State), INTENT(INOUT) :: state
+    INTEGER, INTENT(IN)             :: nFields
+    TYPE(FldList_T), INTENT(INOUT)  :: fieldDefs(:)
+    INTEGER, INTENT(INOUT)          :: rc
 
-    INTEGER                                     :: i
-    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_AdvertiseFields)'
+    INTEGER                         :: i
+    CHARACTER(LEN = *), PARAMETER   :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':AdvertiseFields)'
 
     rc = ESMF_SUCCESS
 
-    DO i = 1, nfields
-      !PRINT *, 'Advertise: '//TRIM(field_defs(i)%stdname)//'---'//TRIM(field_defs(i)%shortname)
-      CALL ESMF_LogWrite('Advertise: '//TRIM(field_defs(i) % stdname), ESMF_LOGMSG_INFO, rc = rc)
+    DO i = 1, nFields
+      CALL ESMF_LogWrite('Advertise: '//TRIM(fieldDefs(i) % stdName), ESMF_LOGMSG_INFO, rc = rc)
       IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                              line = __LINE__, &
                              file = __FILE__)) &
         RETURN  ! bail out
 
       CALL NUOPC_Advertise(state, &
-                           standardName = field_defs(i) % stdname, &
-                           name = field_defs(i) % shortname, &
+                           standardName = fieldDefs(i) % stdName, &
+                           name = fieldDefs(i) % shortName, &
                            rc = rc)
       IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                              line = __LINE__, &
                              file = __FILE__)) &
         RETURN  ! bail out
     END DO
-    !PRINT *,      subname,' --- IN   --- '
 
-  END SUBROUTINE BARDATA_AdvertiseFields
+  END SUBROUTINE AdvertiseFields
 
 !================================================================================
 
-
   !-----------------------------------------------------------------------
-  !     S U B R O U T I N E   B A R D A T A _ F I E L D S S E T U P
+  !     S U B R O U T I N E   F I E L D S S E T U P
   !-----------------------------------------------------------------------
   !>
   !> @brief
@@ -436,29 +466,157 @@ MODULE BarData
   !> @param
   !>
   !----------------------------------------------------------------
-  SUBROUTINE BARDATA_FieldsSetup
+  SUBROUTINE FieldsSetup
 
     IMPLICIT NONE
 
     INTEGER                        :: rc
-    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_FieldsSetup)'
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':FieldsSetup)'
 
-    !--------- import fields to BARDATA  -------------
+     !==== BPGX
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("east_west_depth_averaged_baroclinic_pressure_gradient")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="eastwest_depth_averaged_baroclinic_pressure_gradient", &
+               canonicalUnits="m s-2", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
+     !==== BPGY
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("north_south_depth_averaged_baroclinic_pressure_gradient")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="northsouth_depth_averaged_baroclinic_pressure_gradient", &
+               canonicalUnits="m s-2", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
+     !==== SigTS
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("surface_sigmat_density")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="surface_sigmat_density", &
+               canonicalUnits="kg m-3", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
+     !==== MLD
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("mixed_layer_depth_ratio")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="mixed_layer_depth_ratio", &
+               canonicalUnits="1", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
+     !==== NB
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("buoyancy_frequency_at_the_seabed")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="buoyancy_frequency_at_the_seabed", &
+               canonicalUnits="s-1", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
+     !==== NM
+     IF (.NOT. NUOPC_FieldDictionaryHasEntry("depth-averaged_buoyancy_frequency")) THEN
+       CALL NUOPC_FieldDictionaryAddEntry( &
+               standardName="depth-averaged_buoyancy_frequency", &
+               canonicalUnits="s-1", rc=rc)
+       IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+         line=__LINE__, &
+         file=__FILE__)) &
+        RETURN  ! bail out
+      ENDIF
 
-    !--------- export fields from BARDATA -------------
-    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "air_pressure_at_sea_level", shortname = "pmsl")
-    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "inst_zonal_wind_height10m", shortname = "izwh10m")
-    CALL fld_list_add(num = fldsFrATM_num, fldlist = fldsFrATM, stdname = "inst_merid_wind_height10m", shortname = "imwh10m")
+!    !==== KE
+!    IF (.NOT. NUOPC_FieldDictionaryHasEntry("depth_averaged_kinetic_energy")) THEN
+!      CALL NUOPC_FieldDictionaryAddEntry( &
+!              standardName="depth_averaged_kinetic_energy", &
+!              canonicalUnits="m2 s-2", rc=rc)
+!      IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+!        line=__LINE__, &
+!        file=__FILE__)) &
+!       RETURN  ! bail out
+!     ENDIF
+!    !==== CDisp
+!    IF (.NOT. NUOPC_FieldDictionaryHasEntry("momentum_dispersion_quadratic_bottom_friction"))_THEN
+!      CALL NUOPC_FieldDictionaryAddEntry( &
+!              standardName="momentum_dispersion_quadratic_bottom_friction", &
+!              canonicalUnits="1", rc=rc)
+!      IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+!        line=__LINE__, &
+!        file=__FILE__)) &
+!       RETURN  ! bail out
+!     ENDIF
+!    !==== DispX
+!    IF (.NOT. NUOPC_FieldDictionaryHasEntry("depth_averaged_x_momentum_dispersion"))_THEN
+!      CALL NUOPC_FieldDictionaryAddEntry( &
+!              standardName="depth_averaged_x_momentum_dispersion", &
+!              canonicalUnits="m s-2", rc=rc)
+!      IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+!        line=__LINE__, &
+!        file=__FILE__)) &
+!       RETURN  ! bail out
+!     ENDIF
+!    !==== DispY
+!    IF (.NOT. NUOPC_FieldDictionaryHasEntry("depth_averaged_y_momentum_dispersion"))_THEN
+!      CALL NUOPC_FieldDictionaryAddEntry( &
+!              standardName="depth_averaged_y_momentum_dispersion", &
+!              canonicalUnits="m s-2", rc=rc)
+!      IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+!        line=__LINE__, &
+!        file=__FILE__)) &
+!       RETURN  ! bail out
+!     ENDIF
+
+    !--------- export fields -------------
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "east_west_depth_averaged_baroclinic_pressure_gradient", &
+                      shortName = "bpgx")
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "north_south_depth_averaged_baroclinic_pressure_gradient", &
+                      shortName = "bpgy")
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "surface_sigmat_density", &
+                      shortName = "sigts")
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "mixed_layer_depth_ratio", &
+                      shortName = "mld")
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "buoyancy_frequency_at_the_seabed", &
+                      shortName = "nb")
+    CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+                      stdName = "depth-averaged_buoyancy_frequency", &
+                      shortName = "nm")
+
+!   CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+!                     stdName = "depth_averaged_kinetic_energy", &
+!                     shortName = "ke")
+!   CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+!                     stdName = "momentum_dispersion_quadratic_bottom_friction", &
+!                     shortName = "cdisp")
+!   CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+!                     stdName = "depth_averaged_x_momentum_dispersion", &
+!                     shortName = "dispx")
+!   CALL FieldListAdd(num = numFldsFromBAR, fldList = fldsFromBAR, &
+!                     stdName = "depth_averaged_y_momentum_dispersion", &
+!                     shortName = "dispy")
 
     WRITE (info, *) subname, ' --- Passed--- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-  END SUBROUTINE BARDATA_FieldsSetup
+  END SUBROUTINE FieldsSetup
 
 !================================================================================
 
   !-----------------------------------------------------------------------
-  !     S U B R O U T I N E   F L D _ L I S T _ A D D
+  !     S U B R O U T I N E   F I E L D L I S T A D D
   !-----------------------------------------------------------------------
   !>
   !> @brief
@@ -470,109 +628,104 @@ MODULE BarData
   !> @param
   !>
   !----------------------------------------------------------------
-  SUBROUTINE fld_list_add(num, fldlist, stdname, data, shortname, unit)
+  SUBROUTINE FieldListAdd(num, fldList, stdName, data, shortName, unit)
 
     IMPLICIT NONE
 
     ! ----------------------------------------------
     ! Set up a list of field information
     ! ----------------------------------------------
-    INTEGER, INTENT(INOUT)  :: num
-    TYPE(fld_list_type), INTENT(INOUT)  :: fldlist(:)
-    CHARACTER(LEN = *), INTENT(IN)     :: stdname
+    INTEGER, INTENT(INOUT)                             :: num
+    TYPE(FldList_T), INTENT(INOUT)                     :: fldList(:)
+    CHARACTER(LEN = *), INTENT(IN)                     :: stdName
     REAL(ESMF_KIND_R8), DIMENSION(:), OPTIONAL, target :: data
-    CHARACTER(LEN = *), INTENT(IN), OPTIONAL :: shortname
-    CHARACTER(LEN = *), INTENT(IN), OPTIONAL :: unit
+    CHARACTER(LEN = *), INTENT(IN)                     :: shortName
+    CHARACTER(LEN = *), INTENT(IN), OPTIONAL           :: unit
 
     ! local variables
     INTEGER :: rc
-    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:fld_list_add)'
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':FieldListAdd)'
 
     ! fill in the new entry
 
     num = num + 1
-    IF (num > fldsMax) THEN
-      CALL ESMF_LogWrite(TRIM(subname)//": ERROR num gt fldsMax "//TRIM(stdname), &
+    IF (num > maxFlds) THEN
+      CALL ESMF_LogWrite(TRIM(subname)//": ERROR num gt maxFlds "//TRIM(stdName), &
                          ESMF_LOGMSG_ERROR, line = __LINE__, file = __FILE__, rc = rc)
       RETURN
     END IF
 
-    fldlist(num) % stdname = TRIM(stdname)
-    IF (PRESENT(shortname)) THEN
-      fldlist(num) % shortname = TRIM(shortname)
-    ELSE
-      fldlist(num) % shortname = TRIM(stdname)
-    END IF
+    fldList(num) % stdName = TRIM(ADJUSTL(stdName))
+    fldList(num) % shortName = TRIM(ADJUSTL(shortName))
 
     IF (PRESENT(data)) THEN
-      fldlist(num) % assoc = .true.
-      fldlist(num) % farrayPtr => data
+      fldList(num) % assoc = .true.
+      fldList(num) % farrayPtr => data
     ELSE
-      fldlist(num) % assoc = .FALSE.
+      fldList(num) % assoc = .FALSE.
     END IF
 
     IF (PRESENT(unit)) THEN
-      fldlist(num) % unit = unit
+      fldList(num) % unit = unit
     END IF
 
     WRITE (info, *) subname, ' --- Passed--- '
 
-  END SUBROUTINE fld_list_add
+  END SUBROUTINE FieldListAdd
 
 !================================================================================
 
   !-----------------------------------------------------------------------
-  !     S U B R O U T I N E   B A R D A T A _ R E A L I Z E F I E L D S
+  !     S U B R O U T I N E   R E A L I Z E F I E L D S
   !-----------------------------------------------------------------------
   !>
   !> @brief
   !>   Adds a set of fields to an ESMF_State object.
   !>
   !> @details
-  !> Each field is wrapped in an ESMF_Field object.  Memory is either allocated
-  !> by ESMF or an existing BARDATA pointer is referenced.
+  !>   Each field is wrapped in an ESMF_Field object.  Memory is either allocated
+  !>   by ESMF or an existing data pointer is referenced.
   !>
   !> @param[inout]
   !>   state         The ESMF_State object to add fields to
   !> @param[in]
-  !>   mesh/grid     The ESMF_Grid object on which to define the fields
+  !>   theGrid       The ESMF_Grid object on which to define the fields
   !> @param[in]
-  !>   nfields       The number of fields
+  !>   nFields       The number of fields
   !> @param[inout]
-  !>   field_defs    Array of fld_list_type indicating the fields to add
+  !>   fieldDefs     Array of FldList_T indicating the fields to add
   !> @param[in]
   !>   tag           Used to output to the log
   !> @param[out]
   !>   rc            Return code
   !>
   !----------------------------------------------------------------
-  SUBROUTINE BARDATA_RealizeFields(state, mesh, mdata, nfields, field_defs, tag, rc)
+  SUBROUTINE RealizeFields(state, theGrid, nFields, fieldDefs, tag, rc)
 
     IMPLICIT NONE
 
-    TYPE(ESMF_State), INTENT(INOUT)             :: state
-    TYPE(ESMF_Mesh), INTENT(IN)                 :: mesh
-    TYPE(meshdata)                              :: mdata
-    INTEGER, INTENT(IN)                         :: nfields
-    TYPE(fld_list_type), INTENT(INOUT)          :: field_defs(:)
-    CHARACTER(LEN = *), INTENT(IN)              :: tag
-    INTEGER, INTENT(INOUT)                      :: rc
+    TYPE(ESMF_State), INTENT(INOUT) :: state
+    TYPE(ESMF_Grid), INTENT(IN)     :: theGrid
+    INTEGER, INTENT(IN)             :: nFields
+    TYPE(FldList_T), INTENT(INOUT)  :: fieldDefs(:)
+    CHARACTER(LEN = *), INTENT(IN)  :: tag
+    INTEGER, INTENT(INOUT)          :: rc
 
-    TYPE(ESMF_Field)                            :: field
-    INTEGER                                     :: i
-    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:BARDATA_RealizeFields)'
+    TYPE(ESMF_Field)                :: field
+    INTEGER                         :: i
+    CHARACTER(LEN = *), PARAMETER   :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':RealizeFields)'
 
     rc = ESMF_SUCCESS
 
-    DO i = 1, nfields
-      field = ESMF_FieldCreate(name = field_defs(i) % shortname, mesh = mesh, &
+    DO i = 1, nFields
+      field = ESMF_FieldCreate(name = fieldDefs(i) % shortName, grid = theGrid, &
                                typekind = ESMF_TYPEKIND_R8, rc = rc)
       IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                              line = __LINE__, &
                              file = __FILE__)) &
         RETURN  ! bail out
 
-      IF (NUOPC_IsConnected(state, fieldName = field_defs(i) % shortname)) THEN
+      IF (NUOPC_IsConnected(state, fieldName = fieldDefs(i) % shortName)) THEN
 
         CALL NUOPC_Realize(state, field = field, rc = rc)
         IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
@@ -580,38 +733,109 @@ MODULE BarData
                                file = __FILE__)) &
           RETURN  ! bail out
 
-        CALL ESMF_LogWrite(subname//tag//" Field "//field_defs(i) % stdname//" is connected.", &
+        CALL ESMF_LogWrite(subname//tag//" Field "//fieldDefs(i) % stdName//" is connected.", &
                            ESMF_LOGMSG_INFO, &
                            line = __LINE__, &
                            file = __FILE__, &
                            rc = dbrc)
-
-        !PRINT *,      subname,' --- Connected --- '
-
       ELSE
-        CALL ESMF_LogWrite(subname//tag//" Field "//field_defs(i) % stdname//" is not connected.", &
+        CALL ESMF_LogWrite(subname//tag//" Field "//fieldDefs(i) % stdName//" is not connected.", &
                            ESMF_LOGMSG_INFO, &
                            line = __LINE__, &
                            file = __FILE__, &
                            rc = dbrc)
         ! TODO: Initialize the value in the pointer to 0 after proper restart is setup
-        !IF (associated(field_defs(i)%farrayPtr) ) field_defs(i)%farrayPtr = 0.0
+        !IF (associated(fieldDefs(i)%farrayPtr) ) fieldDefs(i)%farrayPtr = 0.0
         ! remove a not connected Field from State
-        CALL ESMF_StateRemove(state, (/field_defs(i) % shortname/), rc = rc)
+        CALL ESMF_StateRemove(state, (/fieldDefs(i) % shortName/), rc = rc)
         IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                                line = __LINE__, &
                                file = __FILE__)) &
           RETURN  ! bail out
-        !PRINT *,      subname,' --- Not-Connected --- '
-        !PRINT *,      subname," Field ", field_defs(i)%stdname ,' --- Not-Connected --- '
       END IF
     END DO
 
     WRITE (info, *) subname, ' --- OUT--- '
-    !PRINT *,      subname,' --- OUT --- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
 
-  END SUBROUTINE BARDATA_RealizeFields
+  END SUBROUTINE RealizeFields
+
+!================================================================================
+
+  SUBROUTINE RealizeAField(state, theGrid, nFields, fieldDefs, sName, tag, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_State), INTENT(INOUT) :: state
+    TYPE(ESMF_Grid), INTENT(IN)     :: theGrid
+    INTEGER, INTENT(IN)             :: nFields
+    TYPE(FldList_T), INTENT(INOUT)  :: fieldDefs(:)
+    CHARACTER(LEN = *), INTENT(IN)  :: sName
+    CHARACTER(LEN = *), INTENT(IN)  :: tag
+    INTEGER, INTENT(INOUT)          :: rc
+
+    TYPE(ESMF_Field)                :: field
+    INTEGER                         :: i, iFLD
+    CHARACTER(LEN = *), PARAMETER   :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':RealizeAField)'
+
+    rc = ESMF_SUCCESS
+
+    iFLD = -1
+    DO i = 1, nFields
+      IF (TRIM(ADJUSTL(ToLowerCase(fieldDefs(i) % shortName))) == &
+          TRIM(ADJUSTL(ToLowerCase(sName)))) THEN
+        iFLD = i
+        EXIT
+      END IF
+    END DO
+
+    IF (iFLD <= 0) THEN
+      WRITE (info, *) subname, ' --- field name ' // TRIM(ADJUSTL((sName))) // ' not in the field list --- '
+      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
+      RETURN
+    END IF
+
+    field = ESMF_FieldCreate(name = fieldDefs(iFLD) % shortName, grid = theGrid, &
+                             typekind = ESMF_TYPEKIND_R8, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    IF (NUOPC_IsConnected(state, fieldName = fieldDefs(iFLD) % shortName)) THEN
+
+      CALL NUOPC_Realize(state, field = field, rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+
+      CALL ESMF_LogWrite(subname//tag//" Field "//fieldDefs(iFLD) % stdName//" is connected.", &
+                         ESMF_LOGMSG_INFO, &
+                         line = __LINE__, &
+                         file = __FILE__, &
+                         rc = dbrc)
+    ELSE
+      CALL ESMF_LogWrite(subname//tag//" Field "//fieldDefs(iFLD) % stdName//" is not connected.", &
+                         ESMF_LOGMSG_INFO, &
+                         line = __LINE__, &
+                         file = __FILE__, &
+                         rc = dbrc)
+      ! TODO: Initialize the value in the pointer to 0 after proper restart is setup
+      !IF (associated(fieldDefs(iFLD)%farrayPtr) ) fieldDefs(iFLD)%farrayPtr = 0.0
+      ! remove a not connected Field from State
+      CALL ESMF_StateRemove(state, (/fieldDefs(iFLD) % shortName/), rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+    END IF
+
+    WRITE (info, *) subname, ' --- OUT--- '
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
+
+  END SUBROUTINE RealizeAField
+
 
 !================================================================================
 
@@ -646,23 +870,25 @@ MODULE BarData
     TYPE(ESMF_State)              :: importState, exportState
     TYPE(ESMF_Time)               :: currTime
     TYPE(ESMF_TimeInterval)       :: timeStep
-    CHARACTER(LEN = *), PARAMETER    :: subname = '(BARDATA:ModelAdvance)'
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':ModelAdvance)'
     !tmp vector
-    REAL(ESMF_KIND_R8), POINTER   :: tmp(:)
+!    REAL(ESMF_KIND_R8), POINTER   :: tmp(:)
 
     !imports
 
     ! exports
-    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_uwnd(:)
-    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_vwnd(:)
-    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_pres(:)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_bpgx(:, :),  dataPtr_bpgy(:, :)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_sigts(:, :), dataPtr_mld(:, :)
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_nb(:, :),    dataPtr_nm(:, :)
+
+    REAL(ESMF_KIND_R8), POINTER   :: dataPtr_ke(:, :), dataPtr_cdisp(:, :), &
+                                     dataPtr_dispx(:, :), dataPtr_dispy(:, :)
 
     TYPE(ESMF_StateItem_Flag)     :: itemType
-    TYPE(ESMF_Mesh)               :: mesh
+    TYPE(ESMF_Grid)               :: theGrid
     TYPE(ESMF_Field)              :: lfield
-    CHARACTER(LEN = 128)            :: fldname, timeStr
-    INTEGER                       :: i1
-    ! local variables for Get methods
+    CHARACTER(LEN = 128)          :: fldName, timeStr
+
     INTEGER :: YY, MM, DD, H, M, S
 
     rc = ESMF_SUCCESS
@@ -684,7 +910,8 @@ MODULE BarData
     ! stopTime of the internal Clock has been reached.
 
     CALL ESMF_ClockPrint(clock, options = "currTime", &
-                         preString = "------>Advancing BARDATA from: ", rc = rc)
+                         preString = "------>Advancing " // TRIM(ADJUSTL(MODEL_NAME)) // " from: ", &
+                         rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
@@ -697,7 +924,9 @@ MODULE BarData
       RETURN  ! bail out
 
     CALL ESMF_TimePrint(currTime + timeStep, &
-                        preString = "------------------BARDATA-------------> to: ", rc = rc)
+                        preString = "------------------" //      &
+                                    TRIM(ADJUSTL(MODEL_NAME)) // &
+                                    "-------------> to: ", rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
@@ -709,8 +938,10 @@ MODULE BarData
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    PRINT *, "BARDATA currTime = ", YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
-    WRITE (info, *) "BARDATA currTime = ", YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
+    PRINT *, TRIM(ADJUSTL(MODEL_NAME)) // " currTime = ", &
+             YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
+    WRITE (info, *) TRIM(ADJUSTL(MODEL_NAME)) // " currTime = ", &
+                    YY, "/", MM, "/", DD, " ", H, ":", M, ":", S
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, line = __LINE__, file = __FILE__, rc = rc)
 
     CALL ESMF_TimeGet(currTime, timeStringISOFrac = timeStr, rc = rc)
@@ -720,77 +951,131 @@ MODULE BarData
       RETURN  ! bail out
 
     !-----------------------------------------
-    !   IMPORT
-    !-----------------------------------------
-
-    !-----------------------------------------
     !   EXPORT
     !-----------------------------------------
-    !update uwnd, vwnd, pres from nearset time in bardata netcdf file
-    !TODO: update file name!!!!
-    CALL NCDF_ReadBarData(currTime)
+    ! Update the fields from the nearest time in the data NetCDF file
+    CALL ReadBarData(currTime)
 
-    !pack and send exported fields
-    ALLOCATE (tmp(mdataOutw % NumOwnedNd))
+    !===== Pack and send BPGX
+    ALLOCATE(dataPtr_bpgx(NX, NY))
 
-    ! >>>>> PACK and send UWND
-    CALL State_GetFldPtr(ST = exportState, fldname = 'izwh10m', fldptr = dataPtr_uwnd, &
+    CALL State_GetFldPtr(ST=exportState, fldName = 'bpgx', fldPtr = dataPtr_bpgx, &
                          rc = rc, dump = .FALSE., timeStr = timeStr)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    iwind_test = iwind_test + 1
-    !fill only owned nodes for tmp vector
-    DO i1 = 1, mdataOutw % NumOwnedNd, 1
-      tmp(i1) = UWND(mdataOutw % owned_to_present_nodes(i1), 1)
-      !tmp(i1) = iwind_test  * i1 / 100000.0
-      !tmp(i1) = -3.0
-    END DO
-    !assign to field
-    dataPtr_uwnd = tmp
-    !----------------------------------------
-    ! >>>>> PACK and send VWND
-    CALL State_GetFldPtr(ST=exportState, fldname = 'imwh10m', fldptr = dataPtr_vwnd, &
+    dataPtr_bpgx = BPGX(:, :, 1)
+
+    !===== Pack and send BPGY
+    ALLOCATE(dataPtr_bpgy(NX, NYY))
+
+    CALL State_GetFldPtr(ST=exportState, fldName = 'bpgy', fldPtr = dataPtr_bpgy, &
                          rc = rc, dump = .FALSE., timeStr = timeStr)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    !fill only owned nodes for tmp vector
-    DO i1 = 1, mdataOutw % NumOwnedNd, 1
-      tmp(i1) = VWND(mdataOutw % owned_to_present_nodes(i1), 1)
-      !tmp(i1) = 15.0
-    END DO
-    !assign to field
-    dataPtr_vwnd = tmp
-    !----------------------------------------
-    ! >>>>> PACK and send PRES
-    CALL State_GetFldPtr(ST = exportState, fldname = 'pmsl', fldptr = dataPtr_pres, &
+    dataPtr_bpgy = BPGY(:, :, 1)
+
+    !===== Pack and send SigTS
+    ALLOCATE(dataPtr_sigts(NX, NY))
+
+    CALL State_GetFldPtr(ST=exportState, fldName = 'sigts', fldPtr = dataPtr_sigts, &
                          rc = rc, dump = .FALSE., timeStr = timeStr)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    !fill only owned nodes for tmp vector
-    DO i1 = 1, mdataOutw % NumOwnedNd, 1
-      tmp(i1) = PRES(mdataOutw % owned_to_present_nodes(i1), 1)
+    dataPtr_sigts = SigTS(:, :, 1)
 
-      IF (abs(tmp(i1)) > 1e11) THEN
-        STOP '  dataPtr_pmsl > mask1 > in BARDATA ! '
-      END IF
-      !tmp(i1) = 1e4
-    END DO
-    !assign to field
-    dataPtr_pres = tmp
-    !----------------------------------------
+    !===== Pack and send MLD
+    ALLOCATE(dataPtr_mld(NX, NY))
 
-    !! TODO:  not a right thing to do. we need to fix the grid object mask <<<<<<
-    !where(dataPtr_uwnd > 3e4) dataPtr_uwnd = 0.0
-    !where(dataPtr_vwnd > 3e4) dataPtr_vwnd = 0.0
+    CALL State_GetFldPtr(ST=exportState, fldName = 'mld', fldPtr = dataPtr_mld, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    dataPtr_mld = MLD(:, :, 1)
+
+    !===== Pack and send NB
+    ALLOCATE(dataPtr_nb(NX, NY))
+
+    CALL State_GetFldPtr(ST=exportState, fldName = 'nb', fldPtr = dataPtr_nb, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    dataPtr_nb = NB(:, :, 1)
+
+    !===== Pack and send NM
+    ALLOCATE(dataPtr_nm(NX, NY))
+
+    CALL State_GetFldPtr(ST=exportState, fldName = 'nm', fldPtr = dataPtr_nm, &
+                         rc = rc, dump = .FALSE., timeStr = timeStr)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    dataPtr_nm = NM(:, :, 1)
+
+!   !===== Pack and send KE
+!   ALLOCATE(dataPtr_ke(NX, NY))
+
+!   CALL State_GetFldPtr(ST=exportState, fldName = 'ke', fldPtr = dataPtr_ke, &
+!                        rc = rc, dump = .FALSE., timeStr = timeStr)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+
+!   dataPtr_ke = KE(:, :, 1)
+
+!   !===== Pack and send CDisp
+!   ALLOCATE(dataPtr_cdisp(NX, NYYY))
+
+!   CALL State_GetFldPtr(ST=exportState, fldName = 'cdisp', fldPtr = dataPtr_cdisp, &
+!                        rc = rc, dump = .FALSE., timeStr = timeStr)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+
+!   dataPtr_cdisp = CDisp(:, :, 1)
+
+!   !===== Pack and send DispX
+!   ALLOCATE(dataPtr_dispx(NX, NYYY))
+
+!   CALL State_GetFldPtr(ST=exportState, fldName = 'dispx', fldPtr = dataPtr_dispx, &
+!                        rc = rc, dump = .FALSE., timeStr = timeStr)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+
+!   dataPtr_dispx = DispX(:, :, 1)
+
+!   !===== Pack and send DispY
+!   ALLOCATE(dataPtr_dispy(NX, NYYY))
+
+!   CALL State_GetFldPtr(ST=exportState, fldName = 'dispy', fldPtr = dataPtr_dispy, &
+!                        rc = rc, dump = .FALSE., timeStr = timeStr)
+!   IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+!                          line = __LINE__, &
+!                          file = __FILE__)) &
+!     RETURN  ! bail out
+
+!   dataPtr_dispy = DispY(:, :, 1)
+
 
   END SUBROUTINE ModelAdvance
 
@@ -812,29 +1097,30 @@ MODULE BarData
   !> @param[out]
   !>   rc         Return code
   !----------------------------------------------------------------
-  SUBROUTINE State_GetFldPtr(ST, fldname, fldptr, rc, dump, timeStr)
+  SUBROUTINE State_GetFldPtr(ST, fldName, fldPtr, rc, dump, timeStr)
 
     IMPLICIT NONE
 
-    TYPE(ESMF_State), INTENT(IN) :: ST
-    CHARACTER(LEN = *), INTENT(IN) :: fldname
-    REAL(ESMF_KIND_R8), POINTER, INTENT(IN) :: fldptr(:)
-    INTEGER, INTENT(OUT), OPTIONAL :: rc
-    LOGICAL :: dump
+    TYPE(ESMF_State), INTENT(IN)                :: ST
+    CHARACTER(LEN = *), INTENT(IN)              :: fldName
+    REAL(ESMF_KIND_R8), POINTER, INTENT(IN)     :: fldPtr(:)
+    INTEGER, INTENT(OUT), OPTIONAL              :: rc
+    LOGICAL, INTENT(IN), OPTIONAL               :: dump
     CHARACTER(LEN = *), INTENT(INOUT), OPTIONAL :: timeStr
 
     ! local variables
-    TYPE(ESMF_Field) :: lfield
-    INTEGER :: lrc
-    CHARACTER(LEN = *), PARAMETER :: subname = '(BARDATA:State_GetFldPtr)'
+    TYPE(ESMF_Field)              :: lfield
+    INTEGER                       :: lrc
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':State_GetFldPtr)'
 
-    CALL ESMF_StateGet(ST, itemName = TRIM(fldname), field = lfield, rc = lrc)
+    ! ESMF ref: 21.7.10- Get an item from a State by item name.
+    CALL ESMF_StateGet(ST, itemName = TRIM(fldName), field = lfield, rc = lrc)
     IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
-    CALL ESMF_FieldGet(lfield, farrayPtr = fldptr, rc = lrc)
+    CALL ESMF_FieldGet(lfield, farrayPtr = fldPtr, rc = lrc)
     IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
@@ -845,7 +1131,8 @@ MODULE BarData
     IF (dump) THEN
       IF (.NOT. PRESENT(timeStr)) timeStr = "_"
       CALL ESMF_FieldWRITE(lfield, &
-                           fileName='moddata_field_'//TRIM(fldname)//TRIM(timeStr)//'.nc', &
+                           fileName = TRIM(ADJUSTL(ToLowerCase(MODEL_NAME))) // '_field_' // &
+                                      TRIM(ADJUSTL(fldName)) // TRIM(ADJUSTL(timeStr)) // '.nc', &
                            rc = rc, overwrite = .TRUE.)
       IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                              line = __LINE__, &
@@ -854,6 +1141,73 @@ MODULE BarData
     END IF
 
   END SUBROUTINE State_GetFldPtr
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  !  S U B R O U T I N E   S T A T E _ G E T F L D P T R 2 D
+  !----------------------------------------------------------------
+  !  author 
+  !>
+  !> Retrieve a pointer to a field's data array from inside an ESMF_State object.
+  !>
+  !> @param[in]
+  !>   ST         The ESMF_State object
+  !> @param[in]
+  !>   fldName    The name of the fields
+  !> @param[in]
+  !>   fldPtr     A pointer to 2D array
+  !> @param[out]
+  !>   rc         Return code
+  !----------------------------------------------------------------
+  SUBROUTINE State_GetFldPtr2D(ST, fldName, fldPtr, rc, dump, timeStr)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_State), INTENT(IN)                :: ST
+    CHARACTER(LEN = *), INTENT(IN)              :: fldName
+    REAL(ESMF_KIND_R8), POINTER, INTENT(IN)     :: fldPtr(:, :)
+    INTEGER, INTENT(OUT), OPTIONAL              :: rc
+    LOGICAL, INTENT(IN), OPTIONAL               :: dump
+    CHARACTER(LEN = *), INTENT(INOUT), OPTIONAL :: timeStr
+
+    !===== Local variables
+    TYPE(ESMF_Field)              :: lfield
+    INTEGER                       :: lrc
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':State_GetFldPtr2D)'
+
+    ! ESMF ref: 21.7.10- Get an item from a State by item name.
+    CALL ESMF_StateGet(ST, itemName = TRIM(fldName), field = lfield, rc = lrc)
+    IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    ! ESMF ref: 26.6.46 - Get a DE-local Fortran array pointer from a Field
+    ! Description: get a fortran pointer to DE-local memory allocation within
+    ! field, DE-local bounds can be queried at the same time. see section
+    ! 26.3.2.
+    CALL ESMF_FieldGet(lfield, farrayPtr = fldPtr, localDe = 0, rc = lrc)
+    IF (ESMF_LogFoundError(rcToCheck = lrc, msg = ESMF_LOGERR_PASSTHRU, &
+                           line = __LINE__, &
+                           file = __FILE__)) &
+      RETURN  ! bail out
+
+    IF (PRESENT(rc)) rc = lrc
+
+    IF (dump) THEN
+      IF (.NOT. PRESENT(timeStr)) timeStr = "_"
+      CALL ESMF_FieldWRITE(lfield, &
+                           fileName = TRIM(ADJUSTL(ToLowerCase(MODEL_NAME))) // '_field_' // &
+                                      TRIM(ADJUSTL(fldName)) // TRIM(ADJUSTL(timeStr)) // '.nc', &
+                           rc = rc, overwrite = .TRUE.)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__, &
+                             file = __FILE__)) &
+        RETURN  ! bail out
+    END IF
+
+  END SUBROUTINE State_GetFldPtr2D
 
 !================================================================================
 
@@ -897,11 +1251,11 @@ MODULE BarData
 
   !-----------------------------------------------------------------------
   !> Called by NUOPC at the end of the run to clean up.  The cap does
-  !! this simply by calling BARDATA_Final.
+  !! this simply by calling ModelFinalize.
   !!
   !! @param gcomp the ESMF_GridComp object
   !! @param rc return code
-  SUBROUTINE BARDATA_model_finalize(gcomp, rc)
+  SUBROUTINE ModelFinalize(gcomp, rc)
 
     IMPLICIT NONE
 
@@ -911,8 +1265,8 @@ MODULE BarData
 
     ! local variables
     TYPE(ESMF_Clock)     :: clock
-    TYPE(ESMF_Time)                        :: currTime
-    CHARACTER(LEN = *), PARAMETER  :: subname = '(BARDATA:bardata_model_finalize)'
+    TYPE(ESMF_Time)      :: currTime
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // ':ModelFinalize)'
 
     rc = ESMF_SUCCESS
 
@@ -934,7 +1288,7 @@ MODULE BarData
     WRITE (info, *) subname, ' --- finalize completed --- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = dbrc)
 
-  END SUBROUTINE BARDATA_model_finalize
+  END SUBROUTINE ModelFinalize
 
 !================================================================================
 

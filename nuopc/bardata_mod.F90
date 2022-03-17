@@ -15,331 +15,271 @@
 
 MODULE Bardat_Mod
 
-  !-----------------------------------------------------------------------------
-  ! ADCIRC mesh utility
-  !-----------------------------------------------------------------------------
   USE MPI
   USE ESMF
   USE NUOPC
   USE NetCDF
 
-  !USE MESH   , only: np,ne,nm,slam,sfea
-  !USE GLOBAL , only: IMAP_EL_LG,NODES_LG
-  !USE GLOBAL , only: ETA2, UU2, VV2  ! Export water level and velocity fileds to bardata model
-  !USE GLOBAL,  ONLY: RSNX2, RSNY2    ! Import bardata 2D forces from bardata model
-  !USE SIZES  , only: ROOTDIR
-
   IMPLICIT NONE
 
-  CHARACTER(LEN = 280)  :: modopt_dir, modopt_nam, modopt_grd
-  CHARACTER(LEN = 280)  :: FILE_NAME
+  PRIVATE
+
+  CHARACTER(LEN = 16), PARAMETER, PUBLIC :: MODEL_NAME = 'BARDATA'
+  CHARACTER(LEN =  3), PARAMETER, PUBLIC :: MODEL_PRFX = 'bar'
+
+  INTEGER, PARAMETER :: IMISSV = -999999
+
+  PUBLIC :: ReadConfig
+  PUBLIC :: InitBarData, ReadBarData
+  PUBLIC :: ToLowerCase, ToUpperCase
+
+  PUBLIC :: create_parallel_esmf_grid_from_griddata
+  PUBLIC :: construct_griddata_from_netcdf
+
+
+  ! For reading the NetCDF file
+  INTEGER,                          PUBLIC :: TSTRLEN, NT, NX, NY, NYY, NYYY
+  CHARACTER(LEN = 16), ALLOCATABLE, PUBLIC :: TIMES(:)
+  REAL(ESMF_KIND_R8),  ALLOCATABLE, PUBLIC :: lon(:), lat(:), lonC(:), latC(:), latS(:)
+  REAL(ESMF_KIND_R8),  ALLOCATABLE, PUBLIC :: BPGX(:, :, :), BPGY(:, :, :), SigTS(:, :, :), &
+                                              MLD(:, :, :), NB(:, :, :), NM(:, :, :)
+  REAL(ESMF_KIND_R8),  ALLOCATABLE, PUBLIC :: KE(:, :, :), CDisp(:, :, :), DispX(:, :, :), DispY(:, :, :)
+
+
+  INTEGER :: ncID
+  INTEGER :: timeDimID, strDimID, nxDimID, nyDimID, nyyDimID, nyyyDimID
+  INTEGER :: timeDimVAL, strDimVAL, nxDimVAL, nyDimVAL, nyyDimVAL, nyyyDimVAL
+
+  INTEGER :: timeVarID, lonVarID, latVarID, loncVarID, latcVarID, latsVarID
+  INTEGER :: bpgxVarID, bpgyVarID, sigtsVarID, mldVarID, nbVarID, nmVarID
+  INTEGER :: keVarID, cdispVarID, dispxVarID, dispyVarID
+
+
+  CHARACTER(LEN = 256)  :: modopt_dir, modopt_nam, modopt_grd
+  CHARACTER(LEN = 256)  :: FILE_NAME
   CHARACTER(LEN = 2048) :: info
 
-  ! info for reading bardata netcdf file
-  INTEGER               :: nnode, nelem, ntime, noel
-  REAL(ESMF_KIND_R8), ALLOCATABLE     :: LONS(:), LATS(:), TIMES(:)
-  INTEGER, ALLOCATABLE     :: TRI(:, :)
-  INTEGER, ALLOCATABLE     :: TRID(:, :)
-  REAL(ESMF_KIND_R8), ALLOCATABLE     :: UWND(:, :), VWND(:, :), PRES(:, :)
-  !netcdf vars
-  INTEGER :: ncid, NOD_dimid, rec_dimid, ELM_dimid, NOE_dimid
-  INTEGER :: LON_varid, LAT_varid, rec_varid, tri_varid
-  INTEGER :: UWND_varid, VWND_varid, PRES_varid
-
-  !> \author Ali Samii - 2016
-    !! See: https://github.com/samiiali
-    !! \brief This object stores the data required for construction of a parallel or serial
-    !! ESMF_Mesh from <tt>fort.14, fort.18, partmesh.txt</tt> files.
-    !!
-  TYPE meshdata
-    !> \details vm is an ESMF_VM object.  ESMF_VM is just an ESMF virtual machine class,
-      !! which we will use to get the data about the local PE and PE count.
-    TYPE(ESMF_VM)                      :: vm
-    !> \details This array contains the node coordinates of the mesh. For
-      !! example, in a 2D mesh, the \c jth coordinate of the \c nth node
-      !! is stored in location <tt> 2*(n-1)+j</tt> of this array.
-    REAL(ESMF_KIND_R8), ALLOCATABLE    :: NdCoords(:)
-    !> \details This array contains the elevation of different nodes of the mesh
-    REAL(ESMF_KIND_R8), ALLOCATABLE    :: bathymetry(:)
-    !> \details Number of nodes present in the current PE. This is different from the
-      !! number of nodes owned by this PE (cf. NumOwnedNd)
-    INTEGER(ESMF_KIND_I4)              :: NumNd
-    !> \details Number of nodes owned by this PE. This is different from the number of
-      !! nodes present in the current PE (cf. NumNd)
-    INTEGER(ESMF_KIND_I4)              :: NumOwnedNd
-    !> \details Number of elements in the current PE. This includes ghost elements and
-      !! owned elements. However, we do not bother to distinguish between owned
-      !! element and present element (as we did for the nodes).
-    INTEGER(ESMF_KIND_I4)              :: NumEl
-    !> \details Number of nodes of each element, which is simply three in 2D ADCIRC.
-    INTEGER(ESMF_KIND_I4)              :: NumND_per_El
-    !> \details Global node numbers of the nodes which are present in the current PE.
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: NdIDs(:)
-    !> \details Global element numbers which are present in the current PE.
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: ElIDs(:)
-    !> \details The element connectivity array, for the present elements in the current PE.
-      !! The node numbers are the local numbers of the present nodes. All the element
-      !! connectivities are arranged in this one-dimensional array.
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: ElConnect(:)
-    !> \details The number of the PE's which own each of the nodes present this PE.
-      !! This number is zero-based.
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: NdOwners(:)
-    !> \details An array containing the element types, which are all triangles in our
-      !! application.
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: ElTypes(:)
-    !> \details This is an array, which maps the indices of the owned nodes to the indices of the present
-      !! nodes. For example, assume we are on <tt>PE = 1</tt>, and we have four nodes present, and the
-      !! first and third nodes belong to <tt>PE = 0</tt>. So we have:
-      !! \code
-      !! NumNd = 4
-      !! NumOwnedNd = 2
-      !! NdOwners = (/0, 1, 0, 1/)
-      !! NdIDs = (/2, 3, 5, 6/)
-      !! owned_to_present = (/2, 4/)    <-- Because the first node owned by this PE is actually
-      !!                                    the second node present on this PE, and so on.
-      !! \endcode
-    INTEGER(ESMF_KIND_I4), ALLOCATABLE :: owned_to_present_nodes(:)
-  END TYPE meshdata
+  ! Type GridData_T for a structured grid
+  TYPE, PUBLIC :: GridData_T
+    TYPE(ESMF_VM)            :: vm
+    INTEGER                  :: maxIndex(2)
+    TYPE(ESMF_GridConn_Flag) :: connflagDim1(2)
+    TYPE(ESMF_GridConn_Flag) :: connflagDim2(2)
+    TYPE(ESMF_CoordSys_Flag) :: coordSys 
+  END TYPE GridData_T
 
 
   CONTAINS
 
 
-!-----------------------------------------------------------------------
-!- Sub !!!????
-!-----------------------------------------------------------------------
-  SUBROUTINE NCDF_InitBarData()
+  !----------------------------------------------------------------
+  !  S U B R O U T I N E   I N I T B A R D A T A
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Extracts all the static data from the "baroclinic" data file.
+  !>
+  !> @details
+  !>   Examines the input file for valid and/or missing data dimensions
+  !>   and data variables. Upon success, extracts all the static data from
+  !>   the "baroclinic" data file.
+  !>
+  !> @param
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE InitBarData()
+
+    USE NetCDF, ONLY: nf90_open, nf90_close, NF90_NOWRITE, &
+                      nf90_inq_dimid, nf90_inquire_dimension, &
+                      nf90_inq_varid, nf90_get_var
 
     IMPLICIT NONE
 
-    CHARACTER(LEN = *), PARAMETER :: NOD_NAME = "node"
-    CHARACTER(LEN = *), PARAMETER :: NOE_NAME = "noel"
-    CHARACTER(LEN = *), PARAMETER :: ELM_NAME = "element"
-    CHARACTER(LEN = *), PARAMETER :: LAT_NAME = "latitude"
-    CHARACTER(LEN = *), PARAMETER :: LON_NAME = "longitude"
-    CHARACTER(LEN = *), PARAMETER :: REC_NAME = "time"
-    CHARACTER(LEN = *), PARAMETER :: UWND_NAME = "uwnd"
-    CHARACTER(LEN = *), PARAMETER :: VWND_NAME = "vwnd"
-    CHARACTER(LEN = *), PARAMETER :: PRES_NAME = "P"
-    CHARACTER(LEN = *), PARAMETER :: TRI_NAME = "tri"
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // '_mod:InitBarData)'
 
-    CHARACTER(LEN = 140)          :: units
-    CHARACTER(LEN = *), PARAMETER :: subname = '(bardata_mod:NCDF_InitBarData)'
+    LOGICAL :: THERE
+    INTEGER :: rc
 
-    logical :: THERE
-    INTEGER :: lat, lon, i, iret, rc, num
-
-    FILE_NAME = TRIM(modopt_dir)//'/'//TRIM(modopt_nam)
+    FILE_NAME = TRIM(ADJUSTL(modopt_dir)) // '/' // TRIM(ADJUSTL(modopt_nam))
     PRINT *, ' FILE_NAME  > ', FILE_NAME
+
     INQUIRE (FILE = FILE_NAME, EXIST = THERE)
-    IF (.NOT. THERE) stop 'BARDATA netcdf grdfile does not exist!'
+    IF (.NOT. THERE) STOP TRIM(ADJUSTL(MODEL_NAME)) // ' NetCDF file does not exist!'
 
-    ncid = 0
+    ncID = 0
     ! Open the file.
-    CALL CheckErr(nf90_open(TRIM(FILE_NAME), NF90_NOWRITE, ncid))
+    CALL CheckErr(nf90_open(TRIM(FILE_NAME), NF90_NOWRITE, ncID))
 
-    ! Get ID of unlimited dimension
-    !CALL CheckErr( nf90_inquire(ncid, unlimitedDimId = rec_dimid) )
+    !==============================
+    !===== Get all dimension IDs and their values
+    CALL CheckErr(nf90_inq_dimid(ncID, 'time',   timeDimID))
+    CALL CheckErr(nf90_inq_dimid(ncID, 'strlen', strDimID))
+    CALL CheckErr(nf90_inq_dimid(ncID, 'NX',     nxDimID))
+    CALL CheckErr(nf90_inq_dimid(ncID, 'NY',     nyDimID))
+    CALL CheckErr(nf90_inq_dimid(ncID, 'NYY',    nyyDimID))
+    CALL CheckErr(nf90_inq_dimid(ncID, 'NYYY',   nyyyDimID))
 
-    ! Get ID of limited dimension
-    CALL CheckErr(nf90_inq_dimid(ncid, REC_NAME, rec_dimid))
-    CALL CheckErr(nf90_inq_dimid(ncid, NOD_NAME, NOD_dimid))
-    CALL CheckErr(nf90_inq_dimid(ncid, ELM_NAME, ELM_dimid))
-    CALL CheckErr(nf90_inq_dimid(ncid, NOE_NAME, NOE_dimid))
+    CALL CheckErr(nf90_inquire_dimension(ncID, timeDimID, len = timeDimVAL))
+    CALL CheckErr(nf90_inquire_dimension(ncID, strDimID,  len = strDimVAL))
+    CALL CheckErr(nf90_inquire_dimension(ncID, nxDimID,   len = nxDimVAL))
+    CALL CheckErr(nf90_inquire_dimension(ncID, nyDimID,   len = nyDimVAL))
+    CALL CheckErr(nf90_inquire_dimension(ncID, nyyDimID,  len = nyyDimVAL))
+    CALL CheckErr(nf90_inquire_dimension(ncID, nyyyDimID, len = nyyyDimVAL))
 
-    ! How many values of "nodes" are there?
-    CALL CheckErr(nf90_inquire_dimension(ncid, NOD_dimid, len = nnode))
-    CALL CheckErr(nf90_inquire_dimension(ncid, ELM_dimid, len = nelem))
-    CALL CheckErr(nf90_inquire_dimension(ncid, NOE_dimid, len = noel))
-    ! What is the name of the unlimited dimension, how many records are there?
-    CALL CheckErr(nf90_inquire_dimension(ncid, rec_dimid, len = ntime))
+    !==============================
+    !===== Get all variable IDs
+    CALL CheckErr(nf90_inq_varid(ncID, 'time', timeVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'lon',  lonVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'lat',  latVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'lonc', loncVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'latc', latcVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'lats', latsVarID))
 
-    !PRINT *,  ' nelem  > ',nelem , ' noel  > ' ,noel,  ' ntime > ',ntime
+    CALL CheckErr(nf90_inq_varid(ncID, 'BPGX',  bpgxVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'BPGY',  bpgyVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'SigTS', sigtsVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'MLD',   mldVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'NB',    nbVarID))
+    CALL CheckErr(nf90_inq_varid(ncID, 'NM',    nmVarID))
 
-    ! Get the varids of the pressure and temperature netCDF variables.
-    CALL CheckErr(nf90_inq_varid(ncid, LAT_NAME, LAT_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, LON_NAME, LON_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, REC_NAME, rec_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, UWND_NAME, UWND_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, VWND_NAME, VWND_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, PRES_NAME, PRES_varid))
-    CALL CheckErr(nf90_inq_varid(ncid, TRI_NAME, TRI_varid))
+    !CALL CheckErr(nf90_inq_varid(ncID, 'KE',    keVarID))
+    !CALL CheckErr(nf90_inq_varid(ncID, 'CDisp', cdispVarID))
+    !CALL CheckErr(nf90_inq_varid(ncID, 'DispX', dispxVarID))
+    !CALL CheckErr(nf90_inq_varid(ncID, 'DispY', dispyVarID))
 
-    !allocate vars
-    IF (.NOT. allocated(LATS)) allocate (LATS(1:nnode))
-    IF (.NOT. allocated(LONS)) allocate (LONS(1:nnode))
-    IF (.NOT. allocated(TIMES)) allocate (TIMES(1:ntime))
-    IF (.NOT. allocated(TRI)) allocate (TRI(1:noel, 1:nelem))
-    IF (.NOT. allocated(TRID)) allocate (TRID(1:noel, 1:nelem))
-    ! read vars
-    CALL CheckErr(nf90_get_var(ncid, LAT_varid, LATS))
-    CALL CheckErr(nf90_get_var(ncid, LON_varid, LONS))
-    CALL CheckErr(nf90_get_var(ncid, rec_varid, TIMES))
-    !CALL CheckErr(nf90_get_var(ncid, UWND_varid, UWND  ))
-    !TODO: Why the order is other way???? Might change the whole forcing fields!!!!<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< IMPORTANT <<<<<
-    ! plot input and out put to be sure we are not scrambling the data. the same for HWRF netcdf file
-    CALL CheckErr(nf90_get_var(ncid, TRI_varid, TRI, start = (/1, 1/), count = (/noel, nelem/)))
-    !TRI = int( TRID )
+    !==============================
+    !===== Allocate variable arrays
+    IF (.NOT. ALLOCATED(TIMES)) ALLOCATE(TIMES(1:timeDimVAL))
+    IF (.NOT. ALLOCATED(lon))   ALLOCATE(lon(1:nxDimVAL))
+    IF (.NOT. ALLOCATED(lat))   ALLOCATE(lat(1:nyDimVAL))
+    IF (.NOT. ALLOCATED(lonC))  ALLOCATE(lonC(1:nxDimVAL))
+    IF (.NOT. ALLOCATED(latC))  ALLOCATE(latC(1:nyyDimVAL))
+    IF (.NOT. ALLOCATED(latS))  ALLOCATE(latS(1:nyyyDimVAL))
 
-    !DO num = 1,10
-    !    PRINT *,  "TRI", TRI(1,num), TRI(2,num), TRI(3,num)
-    !END DO
+    !==============================
+    !===== Read some variables
+    CALL CheckErr(nf90_get_var(ncID, timeVarID, TIMES))
+    CALL CheckErr(nf90_get_var(ncID, lonVarID,  lon))
+    CALL CheckErr(nf90_get_var(ncID, latVarID,  lat))
+    CALL CheckErr(nf90_get_var(ncID, loncVarID, lonC))
+    CALL CheckErr(nf90_get_var(ncID, latcVarID, latC))
+    CALL CheckErr(nf90_get_var(ncID, latsVarID, latS))
 
-    WRITE (info, *) subname, ' --- init bardata netcdf file  --- '
-    !PRINT *, info
+    TSTRLEN = strDimVAL
+    NT      = strDimVAL
+    NX      = nxDimVAL
+    NY      = nyDimVAL
+    NYY     = nyyDimVAL
+    NYYY    = nyyyDimVAL
+
+    WRITE (info, *) subname, ' --- init ' // TRIM(ADJUSTL(MODEL_NAME)) // ' NetCDF file  --- '
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-  END SUBROUTINE
+  END SUBROUTINE InitBarData
 
 !================================================================================
 
   !----------------------------------------------------------------
-  !  S U B R O U T I N E   N C D F _ R E A D B A R D A T A
+  !  S U B R O U T I N E   R E A D B A R D A T A
   !----------------------------------------------------------------
   !> @author Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
   !>
-  !> Extracts the mesh data from the mesh  file using PaHM's ReadMesh()
-  !! subroutine and populates the MeshData object "theData" accordingly.
-  !!
+  !>
   !----------------------------------------------------------------
-  SUBROUTINE NCDF_ReadBarData(currTime)
+  SUBROUTINE ReadBarData(currTime)
 
     IMPLICIT NONE
 
-    TYPE(ESMF_Time), intent(in)     :: currTime
-    TYPE(ESMF_Time)                :: refTime
-    TYPE(ESMF_TimeInterval)        :: dTime
+    TYPE(ESMF_Time), INTENT(IN)   :: currTime
 
-    CHARACTER(LEN = 140)          :: units
-    CHARACTER(LEN = *), PARAMETER :: subname = '(bardata_mod:NCDF_ReadBarData)'
-    INTEGER, PARAMETER :: NDIMS = 2
-    INTEGER    :: start(NDIMS), count(NDIMS)
-    logical    :: THERE
-    REAL       :: delta_d_all(ntime), delta_d_ref
-    !INTEGER   :: dimids(NDIMS)
+    CHARACTER(LEN = *), PARAMETER :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // '_mod:ReadBarData)'
 
-    character  :: c1, c2, c3, c4, c5, c6, c7
-    INTEGER    :: yy, mm, dd, hh, min, ss
-    INTEGER    :: d_d, d_h, d_m, d_s
-    INTEGER    :: lat, lon, it, iret, rc
+    TYPE(ESMF_Time)         :: dataTime
+    TYPE(ESMF_TimeInterval) :: dTime
+
+    INTEGER                 :: start(3), count(3)
+    REAL(ESMF_KIND_R8)      :: deltaTime(NT)
+
+    INTEGER                 :: YY, MM, DD, HH, MN, SS
+    INTEGER                 :: dtYY, dtMM, dtDD, dtHH, dtMN, dtSS
+    INTEGER                 :: iCnt, it, rc
 
     rc = ESMF_SUCCESS
 
-    !units = "days since 1990-01-01 00:00:00"
-    CALL CheckErr(nf90_get_att(ncid, rec_varid, 'units', units))
-    READ (units, '(a4,a7,i4,a1,i2,a1,i2,a1,i2,a1,i2,a1,i2)', iostat = iret) &
-      c1, c2, yy, c3, mm, c4, dd, c5, hh, c6, min, c7, ss
 
-    IF (iret .ne. 0) THEN
-      PRINT *, 'Fatal error: A non valid time units string was provided'
-      STOP 'bardata_mod: NCDF_ReadBarData'
-    END IF
+    DO iCnt = 1, NT
+      CALL SplitDateTimeString(PreProcessDateTimeString(TIMES(iCnt)), YY, MM, DD, HH, MN, SS)
 
-    CALL ESMF_TimeSet(refTime, yy = yy, mm = mm, dd = dd, h = hh, m = min, s = ss, rc = rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
+      CALL ESMF_TimeSet(dataTime, yy = YY, mm = MM, dd = DD, h = HH, m = MN, s = SS, rc = rc)
+      IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                             line = __LINE__,  &
+                             file = __FILE__)) &
+       RETURN  ! bail out
 
-    dTime = currTime - refTime
-    CALL ESMF_TimeIntervalGet(dTime, d = d_d, h = d_h, m = d_m, s = d_s, rc = rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
+       dTime = currTime - dataTime
+       CALL ESMF_TimeIntervalGet(dTime, d = dtDD, h = dtHH, m = dtMN, s = dtSS, rc = rc)
+       IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+                              line = __LINE__,  &
+                              file = __FILE__)) &
+         RETURN  ! bail out
 
-    delta_d_ref = d_d + d_h / 24.0 + d_m / (24.0 * 60.0) + d_s / (24.0 * 3600.0)
-
-    DO it = 1, ntime
-      delta_d_all(it) = delta_d_ref - TIMES(it)
+      deltaTime(iCnt) = dtDD + dtHH / 24.0 + dtMN / 1440.0  + dtSS / 86400.0
     END DO
 
-    it = minloc(abs(delta_d_all), dim = 1)
+    it = MINLOC(ABS(deltaTime), 1)
 
-    IF (abs(delta_d_all(it)) > 7200.) THEN
-      WRITE (info, *) subname, ' --- STOP BARData: Time dif is GT 2 hours ---  '
-      CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
-      STOP ' --- STOP BARData: Time dif is GT 2 hours ---  '
-    END IF
+    WRITE (info, *) subname, TRIM(ADJUSTL(MODEL_NAME)) // ' file time > ', TRIM(TIMES(it))
+    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-    !it = 1
-    !PRINT *, 'bardata file it index > ',it
+    !==============================
+    !===== Allocate variable arrays
+    IF (.NOT. ALLOCATED(BPGX))  ALLOCATE(BPGX(1:NX, 1:NY, 1))
+    IF (.NOT. ALLOCATED(BPGY))  ALLOCATE(BPGY(1:NX, 1:NYY, 1))
+    IF (.NOT. ALLOCATED(SigTS)) ALLOCATE(SigTS(1:NX, 1:NY, 1))
+    IF (.NOT. ALLOCATED(MLD))   ALLOCATE(MLD(1:NX, 1:NY, 1))
+    IF (.NOT. ALLOCATED(NB))    ALLOCATE(NB(1:NX, 1:NY, 1))
+    IF (.NOT. ALLOCATED(NM))    ALLOCATE(NM(1:NX, 1:NY, 1))
 
-    WRITE (info, *) subname, 'bardata file it index > ', it
+    !IF (.NOT. ALLOCATED(KE))    ALLOCATE(KE(1:NX, 1:NY, 1))
+    !IF (.NOT. ALLOCATED(CDisp)) ALLOCATE(CDisp(1:NX, 1:NYYY, 1))
+    !IF (.NOT. ALLOCATED(DispX)) ALLOCATE(DispX(1:NX, 1:NYYY, 1))
+    !IF (.NOT. ALLOCATED(DispY)) ALLOCATE(DispY(1:NX, 1:NYYY, 1))
+
+    !==============================
+    !===== Read the variables
+    start = (/1, 1, it/)
+    count = (/NX, NY, 1/)
+
+    BPGX  = 0.0
+    BPGY  = 0.0
+    SigTS = 0.0
+    MLD   = 0.0
+    NB    = 0.0
+    NM    = 0.0
+!    KE    = 0.0
+!    CDisp = 0.0
+!    DispX = 0.0
+!    DispY = 0.0
+
+    CALL CheckErr(nf90_get_var(ncID, bpgxVarID,  BPGX,  start, count))
+    CALL CheckErr(nf90_get_var(ncID, bpgyVarID,  BPGY,  start, (/NX, NYY, 1/)))
+    CALL CheckErr(nf90_get_var(ncID, sigtsVarID, SigTS, start, count))
+    CALL CheckErr(nf90_get_var(ncID, mldVarID,   MLD,   start, count))
+    CALL CheckErr(nf90_get_var(ncID, nbVarID,    NB,    start, count))
+    CALL CheckErr(nf90_get_var(ncID, nmVarID,    NM,    start, count))
+
+    !CALL CheckErr(nf90_get_var(ncID, keVarID,    KE,    start, count))
+    !CALL CheckErr(nf90_get_var(ncID, cdispVarID, CDisp, start, (/NX, NYYY, 1/)))
+    !CALL CheckErr(nf90_get_var(ncID, dispxVarID, DispX, start, (/NX, NYYY, 1/)))
+    !CALL CheckErr(nf90_get_var(ncID, dispyVarID, DispY, start, (/NX, NYYY, 1/)))
+
+    WRITE (info, *) subname, ' --- read ' // TRIM(ADJUSTL(MODEL_NAME)) // ' NetCDF file  --- '
     !PRINT *, info
     CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
 
-    CALL ESMF_TimePrint(refTime, preString = "BARDATA refTime =  ", rc = rc)
-    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
-                           line = __LINE__, &
-                           file = __FILE__)) &
-      RETURN  ! bail out
+  END SUBROUTINE ReadBarData
 
-    !WRITE(info,*) ' Read BARData netcdf:',it,
-    !CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
-
-    !alocate vars
-    IF (.NOT. allocated(UWND)) allocate (UWND(1:nnode, 1))
-    IF (.NOT. allocated(VWND)) allocate (VWND(1:nnode, 1))
-    IF (.NOT. allocated(PRES)) allocate (PRES(1:nnode, 1))
-
-    start = (/1, it/)
-    count = (/nnode, 1/)  !for some reason the order here is otherway around?!
-
-    !PRINT *, start+count
-    !PRINT *,size(UWND(ntime,:))
-    CALL CheckErr(nf90_get_var(ncid, UWND_varid, UWND, start, count))
-    CALL CheckErr(nf90_get_var(ncid, VWND_varid, VWND, start, count))
-    CALL CheckErr(nf90_get_var(ncid, PRES_varid, PRES, start, count))
-
-    !PRINT *,FILE_NAME , '   HARD CODED for NOWWWW>>>>>     Time index from bardata file is > ', it, UWND(1:10,1)
-    WRITE (info, *) subname, ' --- read BARData netcdf file  --- '
-    !PRINT *, info
-    CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
-
-  END SUBROUTINE
-  !-----------------------------------------------------------------------
-  !- Sub !!!????
-  !-----------------------------------------------------------------------
-
-  SUBROUTINE construct_meshdata_from_netcdf(the_data)
-
-    IMPLICIT NONE
-
-    INTEGER                               :: i1
-    INTEGER, PARAMETER                    :: dim1 = 2, spacedim = 2, NumND_per_El = 3
-    TYPE(meshdata), intent(inout)         :: the_data
-    the_data % NumEl = nelem
-    the_data % NumNd = nnode
-    allocate (the_data % NdIDs(the_data % NumNd))
-    allocate (the_data % ElIDs(the_data % NumEl))
-    allocate (the_data % NdCoords(dim1 * the_data % NumNd))
-    allocate (the_data % bathymetry(the_data % NumNd))
-    allocate (the_data % ElConnect(NumND_per_El * the_data % NumEl))
-    allocate (the_data % NdOwners(the_data % NumNd))
-    allocate (the_data % ElTypes(the_data % NumEl))
-    allocate (the_data % owned_to_present_nodes(the_data % NumNd))
-
-    DO i1 = 1, the_data % NumNd, 1
-      the_data % NdIDs(i1) = i1
-      the_data % NdCoords((i1 - 1) * dim1 + 1) = LONS(i1)
-      the_data % NdCoords((i1 - 1) * dim1 + 2) = LATS(i1)
-    END DO
-    DO i1 = 1, the_data % NumEl, 1
-      the_data % ElIDs(i1) = i1
-      the_data % ElConnect((i1 - 1) * NumND_per_El + 1) = TRI(1, i1)
-      the_data % ElConnect((i1 - 1) * NumND_per_El + 2) = TRI(2, i1)
-      the_data % ElConnect((i1 - 1) * NumND_per_El + 3) = TRI(3, i1)
-    END DO
-    !We have only one node therefore:
-    the_data % NdOwners = 0                  !process 0 owns all the nodes
-    the_data % NumOwnedND = the_data % NumNd   !number of nodes = number of owned nodes
-    the_data % owned_to_present_nodes = the_data % NdIDs
-
-    the_data % ElTypes = ESMF_MESHELEMTYPE_TRI
-
-    close (14)
-  END SUBROUTINE
+!================================================================================
 
   !-----------------------------------------------------------------------
   !     S U B R O U T I N E   C H E C K E R R
@@ -357,14 +297,14 @@ MODULE Bardat_Mod
   !>   message   A message string to be included in the output message
   !>             Usually the name of the calling procedure (optional)
   !> @param[in]
-  !>   ncid      The ID of the NetCDF file. If present CheckErr will try
+  !>   ncID      The ID of the NetCDF file. If present CheckErr will try
   !>             to close the file (optional)
   !> @param[in]
-  !>   varid     The ID of the variable in the NetCDF file. If present CheckErr
+  !>   varID     The ID of the variable in the NetCDF file. If present CheckErr
   !>             will output the ID of the variable (optional)
   !>
   !----------------------------------------------------------------
-  SUBROUTINE CheckErr(status, message, ncid, varid)
+  SUBROUTINE CheckErr(status, message, ncID, varID)
 
     USE NetCDF, ONLY: nf90_strerror, nf90_noerr, nf90_close
 
@@ -376,26 +316,25 @@ MODULE Bardat_Mod
 
     ! (Provide this argument if you want "CheckErr" to try to close
     ! the file.)
-    INTEGER, INTENT(IN), OPTIONAL            :: ncid
-    INTEGER, INTENT(IN), OPTIONAL            :: varid
+    INTEGER, INTENT(IN), OPTIONAL            :: ncID
+    INTEGER, INTENT(IN), OPTIONAL            :: varID
 
     ! Variable local to the procedure:
     INTEGER status_close
 
     IF (status /= nf90_noerr) THEN
       IF (PRESENT(message)) PRINT *, message, ":"
-      IF (PRESENT(varid)) PRINT *, "varid = ", varid
+      IF (PRESENT(varID)) PRINT *, "varid = ", varID
       PRINT *, TRIM(nf90_strerror(status))
-      IF (PRESENT(ncid)) THEN
+      IF (PRESENT(ncID)) THEN
         ! Try to close, to leave the file in a consistent state:
-        status_close = nf90_close(ncid)
-        ! (do not call "nf95_close", we do not want to recurse)
+        status_close = nf90_close(ncID)
         IF (status_close /= nf90_noerr) THEN
           PRINT *, "nf90_close:"
           PRINT *, TRIM(nf90_strerror(status_close))
         END IF
       END IF
-      STOP 1
+      STOP
     END IF
 
   END SUBROUTINE CheckErr
@@ -405,50 +344,136 @@ MODULE Bardat_Mod
   !-----------------------------------------------------------------------
   !- Sub !!!????
   !-----------------------------------------------------------------------
-  !> \author Ali Samii - 2016
-    !! See: https://github.com/samiiali
   !> @details Using the data available in <tt> fort.14, fort.18, partmesh.txt</tt> files
-    !! this function extracts the scalars and arrays required for construction of a
-    !! meshdata object.
-    !! After calling this fucntion, one can call create_parallel_esmf_mesh_from_meshdata()
-    !! or create_masked_esmf_mesh_from_data() to create an ESMF_Mesh.
-    !! @param vm This is an ESMF_VM object, which will be used to obtain the \c localPE
-    !! and \c peCount of the \c MPI_Communicator.
-    !! @param global_fort14_dir This is the directory path (relative to the executable
-    !! or an absolute path) which contains the global \c fort.14 file (not the fort.14
-    !! after decomposition).
-    !! @param the_data This is the output meshdata object.
-    !!
+  !> this function extracts the scalars and arrays required for construction of a
+  !> MeshData_T object.
+  !> After calling this fucntion, one can call create_parallel_esmf_mesh_from_meshdata()
+  !> or create_masked_esmf_mesh_from_data() to create an ESMF_Mesh.
+  !> @param vm This is an ESMF_VM object, which will be used to obtain the \c localPE
+  !> and \c peCount of the \c MPI_Communicator.
+  !> @param global_fort14_dir This is the directory path (relative to the executable
+  !> or an absolute path) which contains the global \c fort.14 file (not the fort.14
+  !> after decomposition).
+  !> @param the_data This is the output MeshData_T object.
+  !>
 
   !> \details As the name of this function suggests, this funciton creates a parallel
-    !! ESMF_Mesh from meshdata object. This function should be called collectively by
-    !! all PEs for the parallel mesh to be created. The function, extract_parallel_data_from_mesh()
-    !! should be called prior to calling this function.
-    !! \param the_data This the input meshdata object.
-    !! \param out_esmf_mesh This is the ouput ESMF_Mesh object.
-  SUBROUTINE create_parallel_esmf_mesh_from_meshdata(the_data, out_esmf_mesh)
+  !> ESMF_Mesh from MeshData_T object. This function should be called collectively by
+  !> all PEs for the parallel mesh to be created. The function, extract_parallel_data_from_mesh()
+  !> should be called prior to calling this function.
+  !> \param theData This the input MeshData_T object.
+  !> \param out_esmf_grid This is the ouput ESMF_Mesh object.
+  SUBROUTINE create_parallel_esmf_grid_from_griddata(varX, varY, theData, out_esmf_grid)
 
     IMPLICIT NONE
 
-    TYPE(ESMF_Mesh), intent(out)                  :: out_esmf_mesh
-    TYPE(meshdata), intent(in)                    :: the_data
-    INTEGER, PARAMETER                            :: dim1 = 2, spacedim = 2, NumND_per_El = 3
+    TYPE(ESMF_Grid),  INTENT(OUT)                 :: out_esmf_grid
+    REAL(ESMF_KIND_R8), INTENT(IN)                :: varX(:), varY(:)
+    TYPE(GridData_T), INTENT(IN)                  :: theData
     INTEGER                                       :: rc
-    out_esmf_mesh = ESMF_MeshCreate(parametricDim = dim1, spatialDim = spacedim, &
-                                    nodeIDs = the_data % NdIDs, nodeCoords = the_data % NdCoords, &
-                                    nodeOwners = the_data % NdOwners, elementIDs = the_data % ElIDs, &
-                                    elementTypes = the_data % ElTypes, elementConn = the_data % ElConnect, &
-                                    rc = rc)
 
+    ! THis fuction is 31.6.9. Create a Grid with user set edge connections and
+    ! a regular distribution
+    ! maxIndex specifies the dimension of grid: the upper extent of the grid
+    ! array; 
+    ! connflagDim1/2 = ESMF_GRIDCONN_NONE (default) without presence.
+    ! coordSys = ESMF_COORDSYS_SPH_DEG (default) if not specified.
+    ! But where did the coordinate information comes in??
+    ! =============== another method to create grid code below: =================!
+    ! out_esmf_grid=ESMF_GridCreate(maxIndex=theData%maxIndex, connflagDim1=theData%connflagDim1, &
+    !           connflagDim2=theData%connflagDim2, coordSys=theData%coordSys,  rc=rc)
+
+    ! call a function to put in the coordinate for this grid:
+    out_esmf_grid = CreateGrid_ModelGrid(theData%maxIndex(1), theData%maxIndex(2), varX, varY, rc = rc)
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
                            line = __LINE__, &
                            file = __FILE__)) &
       RETURN  ! bail out
 
+  END SUBROUTINE create_parallel_esmf_grid_from_griddata
+
+!================================================================================
+
+  SUBROUTINE construct_griddata_from_netcdf(nDimX, nDimY, theData)
+
+    IMPLICIT NONE
+
+    INTEGER, INTENT(IN)             :: nDimX, nDimY
+    TYPE(GridData_T), INTENT(INOUT) :: theData
+
+    theData%maxIndex        = (/nDimX, nDimY/)
+    theData%connflagDim1(1) = ESMF_GRIDCONN_NONE
+    theData%connflagDim1(2) = ESMF_GRIDCONN_NONE
+    theData%connflagDim2(1) = ESMF_GRIDCONN_NONE
+    theData%connflagDim2(2) = ESMF_GRIDCONN_NONE
+    theData%coordSys        = ESMF_COORDSYS_SPH_DEG ! spherical grid in degrees
+
   END SUBROUTINE
-  !-----------------------------------------------------------------------
-  !- Sub !!!????
-  !-----------------------------------------------------------------------
+
+!================================================================================
+
+  FUNCTION CreateGrid_ModelGrid(nVarX, nVarY, varX, varY, rc)
+
+    IMPLICIT NONE
+
+    TYPE(ESMF_Grid)                :: CreateGrid_ModelGrid
+
+    INTEGER, INTENT(IN)            :: nVarX, nVarY
+    REAL(ESMF_KIND_R8), INTENT(IN) :: varX(:), varY(:)
+    INTEGER, INTENT(OUT), OPTIONAL :: rc
+
+    REAL(ESMF_KIND_R8), POINTER    :: coordX(:, :), coordY(:, :)
+    INTEGER                        :: i, j
+
+    CHARACTER(LEN = *), PARAMETER  :: subname = '(' // TRIM(ADJUSTL(MODEL_NAME)) // &
+                                                '_mod: CreateGrid_ModelGrid)'
+
+    rc = ESMF_SUCCESS
+
+    CreateGrid_ModelGrid = ESMF_GridCreateNoPeriDim(name = "ModelGrid", &
+                           minIndex  = (/1, 1/), &
+                           maxIndex  = (/nVarX, nVarY/), &
+                           indexflag = ESMF_INDEX_GLOBAL, &
+                           rc=rc)
+
+    ! Add coordinates
+    call ESMF_GridAddCoord(CreateGrid_ModelGrid, &
+                           staggerloc = ESMF_STAGGERLOC_CENTER, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+        LINE = __LINE__, &
+        FILE = __FILE__)) &
+        RETURN  ! bail out
+
+    CALL ESMF_GridGetCoord(CreateGrid_ModelGrid, coordDim = 1,  &
+                           staggerloc = ESMF_STAGGERLOC_CENTER, &
+                           farrayPtr = coordX, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
+        LINE = __LINE__, &
+        FILE = __FILE__)) &
+        RETURN  ! bail out
+
+    CALL ESMF_GridGetCoord(CreateGrid_ModelGrid, coordDim = 2, &
+                           staggerloc = ESMF_STAGGERLOC_CENTER, &
+                           farrayPtr = coordY, rc = rc)
+    IF (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, &
+        LINE = __LINE__, &
+        FILE = __FILE__)) &
+        RETURN  ! bail out
+
+    ! Set coordinates
+    DO i = 1, nVarX
+      DO j = 1, nVarY
+        coordX(i, j) = varX(i)
+        coordY(i, j) = varY(j)
+      END DO
+    END DO
+
+  WRITE(info,*) subname,' --- ' // TRIM(ADJUSTL(MODEL_NAME)) // ' CreateGrid_ModelGrid completed --- '
+  CALL ESMF_LogWrite(info, ESMF_LOGMSG_INFO, rc = rc)
+     
+  END FUNCTION CreateGrid_ModelGrid
+
+!================================================================================
 
   !-----------------------------------------------------------------------
   !     S U B R O U T I N E   R E A D C O N F I G
@@ -474,8 +499,10 @@ MODULE Bardat_Mod
 
     IMPLICIT NONE
 
-    CHARACTER(ESMF_MAXPATHLEN), INTENT(IN), OPTIONAL :: ConfFile  ! config file name
-    CHARACTER(LEN = *), INTENT(IN)                  :: OptPrefix ! config file name
+    ! prefix of the field name in the config file
+    CHARACTER(LEN = *), INTENT(IN)                   :: OptPrefix
+    ! config file name, default config.rc
+    CHARACTER(ESMF_MAXPATHLEN), INTENT(IN), OPTIONAL :: ConfFile
 
     ! Local variables
     CHARACTER(ESMF_MAXPATHLEN) :: fname ! config file name
@@ -516,7 +543,7 @@ MODULE Bardat_Mod
 
     CALL ESMF_ConfigGetAttribute(cf, modopt_grd,                              &
                                  label = TRIM(ADJUSTL(OptPrefix)) // '_grd:', &
-                                 default = 'moddata.nc',                      &
+                                 default = 'mod_grd.nc',                      &
                                  rc = rc)
 
     IF (ESMF_LogFoundError(rcToCheck = rc, msg = ESMF_LOGERR_PASSTHRU, &
@@ -528,6 +555,350 @@ MODULE Bardat_Mod
     CALL ESMF_ConfigDestroy(cf, rc = rc)
 
   END SUBROUTINE ReadConfig
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   T O  L O W E R  C A S E
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Convert a string to lower-case.
+  !>
+  !> @details
+  !>   
+  !>
+  !> @param[in]
+  !>   inpString   The input string
+  !>
+  !> @return
+  !>   outString: The ouput string in lower case
+  !>
+  !----------------------------------------------------------------
+  PURE FUNCTION ToLowerCase(inpString) RESULT(outString)
+
+    IMPLICIT NONE
+
+    CHARACTER(*), INTENT(IN)  :: inpString
+
+    INTEGER, PARAMETER        :: DUC = ICHAR('A') - ICHAR('a')
+    CHARACTER(LEN(inpString)) :: outString
+    CHARACTER                 :: ch
+    INTEGER                   :: i
+
+    DO i = 1, LEN(inpString)
+      ch = inpString(i:i)
+      IF ((ch >= 'A') .AND. (ch <= 'Z')) ch = CHAR(ICHAR(ch) - DUC)
+      outString(i:i) = ch
+    END DO
+
+    RETURN
+
+  END FUNCTION ToLowerCase
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   T O  U P P E R  C A S E
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Convert a string to upper-case.
+  !>
+  !> @details
+  !>   
+  !>
+  !> @param[in]
+  !>   inpString   The input string
+  !>
+  !> @return
+  !>   outString: The ouput string in upper case
+  !>
+  !----------------------------------------------------------------
+  PURE FUNCTION ToUpperCase(inpString) RESULT(outString)
+
+    IMPLICIT NONE
+
+    CHARACTER(*), INTENT(IN)  :: inpString
+
+    INTEGER, PARAMETER        :: DUC = ICHAR('A') - ICHAR('a')
+    CHARACTER(LEN(inpString)) :: outString
+    CHARACTER                 :: ch
+    INTEGER                   :: i
+
+    DO i = 1, LEN(inpString)
+      ch = inpString(i:i)
+      IF ((ch >= 'a') .AND. (ch <= 'z')) ch = CHAR(ICHAR(ch) + DUC)
+      outString(i:i) = ch
+    END DO
+
+    RETURN
+
+  END FUNCTION ToUpperCase
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! S U B R O U T I N E   S P L I T  D A T E  T I M E  S T R I N G
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Splits a date string into components.
+  !>
+  !> @details
+  !>   This subroutine splits the string inDate (YYYYMMDDhhmmss) in six integers that is,
+  !>   "iYear (YYYY)", "iMonth (MM)", "iDay (DD)", "iHour (hh)", "iMin (mm)" and "iSec (ss)".
+  !>
+  !> @param[in]
+  !>   inDateTime  The input date string: YYYYMMDDhhmmss
+  !> @param[out]
+  !>   iYear       The year (YYYY, integer, 1582 <= YYYY, output)
+  !> @param[out]
+  !>   iMonth      The month of the year (MM, integer, 1 <= MM <=12, output)
+  !> @param[out]
+  !>   iDay        The day of the month (DD, integer, 1 <= DD <=31, output)
+  !> @param[out]
+  !>   iHour       The hour of the day (hh, integer, 0 <= hh <= 23, output)
+  !> @param[out]
+  !>   iMin        The minute of the hour (mm, integer, 0 <= mm <= 59, output)
+  !> @param[out]
+  !>   iSec        The second of the minute (ss, integer, 0 <= ss <= 59, output)
+  !>
+  !----------------------------------------------------------------
+  SUBROUTINE SplitDateTimeString(inDateTime, iYear, iMonth, iDay, iHour, iMin, iSec)
+
+    IMPLICIT NONE
+
+    ! Global Variables
+    CHARACTER(LEN=*), INTENT(IN)   :: inDateTime
+    INTEGER, INTENT(OUT)           :: iYear, iMonth, iDay, iHour, iMin, iSec
+
+    ! Local Variables
+    CHARACTER(LEN=LEN(inDateTime)) :: tmpDateStr
+    INTEGER                        :: errIO
+
+    !----- START CALCULATIONS -----
+
+    tmpDateStr = PreProcessDateTimeString(inDateTime)
+
+    IF (TRIM(tmpDateStr) == '') THEN
+      iYear  = IMISSV
+      iMonth = 0
+      iDay   = 0
+      iHour  = 0
+      iMin   = 0
+      iSec   = 0
+
+      RETURN
+    END IF
+
+    READ(tmpDateStr(1:4), '(I4.4)', IOSTAT=errIO) iYear
+      IF ((errIO /= 0) .OR. (iYear < 1582)) iYear = IMISSV
+
+    READ(tmpDateStr(5:6), '(I2.2)', IOSTAT=errIO) iMonth
+      IF ((errIO /= 0) .OR. (iMonth < 1) .OR. (iMonth > 12)) iMonth = 0
+
+    READ(tmpDateStr(7:8), '(I2.2)', IOSTAT=errIO) iDay
+      IF ((errIO /= 0) .OR. (iDay < 0) .OR. (iDay > MonthDays(iYear, iMonth))) iDay = 0
+
+    READ(tmpDateStr(9:10), '(I2.2)', IOSTAT=errIO) iHour
+      IF ((errIO /= 0) .OR. (iHour < 0) .OR. (iHour >= 23)) iHour = 0
+
+    READ(tmpDateStr(11:12), '(I2.2)', IOSTAT=errIO) iMin
+      IF ((errIO /= 0) .OR. (iMin < 0) .OR. (iMin >= 60)) iMin = 0
+
+    READ(tmpDateStr(13:14), '(I2.2)', IOSTAT=errIO) iSec
+      IF ((errIO /= 0) .OR. (iSec < 0) .OR. (iSec >= 60)) iSec = 0
+
+  END SUBROUTINE SplitDateTimeString
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   P R E  P R O C E S S  D A T E  T I M E  S T R I N G
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Pre-processes an arbitrary date string.
+  !>
+  !> @details
+  !>   This function returns a date/time string in the format YYYYMMDDhhmmss by
+  !>   removing all non-numeric characters from the string.
+  !>
+  !> @param[in]
+  !>   inDateTime  The input date string
+  !>
+  !> @return
+  !>   myValOut    The string datetime as an integer in the form: YYYYMMDDhhmmss
+  !>
+  !----------------------------------------------------------------
+  FUNCTION PreProcessDateTimeString(inDateTime) Result(myValOut)
+
+    IMPLICIT NONE
+
+    ! Global Variables
+    CHARACTER(LEN=*), INTENT(IN)   :: inDateTime
+    CHARACTER(LEN=LEN(inDateTime)) :: myValOut
+
+    ! Local Variables
+    CHARACTER(LEN=1)               :: c
+    INTEGER                        :: i, iPos
+
+    !----- START CALCULATIONS -----
+
+    myValOut = ' '
+    iPos = 1
+
+    DO i = 1, LEN(inDateTime)
+      c = inDateTime(i:i)
+      IF ((48 <= ichar(c)) .AND. (ichar(c) <= 57)) THEN
+        myValOut(iPos:iPos) = c
+        iPos = iPos + 1
+      ENDIF
+    END DO
+
+    RETURN
+
+  END FUNCTION PreProcessDateTimeString
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   L E A P  Y E A R
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Checks for a leap year.
+  !>
+  !> @details
+  !>   This function tries to determine if a Gregorian year (>= 1582) 
+  !>   is a leap year or not.
+  !>
+  !> @param[in]
+  !>   iYear     The year (YYYY, integer, 1582 <= YYYY)
+  !>
+  !> @return
+  !>   myVal .TRUE. if it is a leap year or .FALSE. otherwise
+  !>
+  !----------------------------------------------------------------
+  LOGICAL FUNCTION LeapYear(iYear) RESULT(myVal)
+
+    IMPLICIT NONE
+
+    INTEGER, INTENT(IN) :: iYear
+
+    !----- START CALCULATIONS -----
+
+    IF (iYear < 1582) THEN
+      myVal = .FALSE.
+
+      RETURN
+    END IF
+
+    ! ADCIRC uses the construct leap = (iYear / 4) * 4 == iYear
+    ! to determine if a year is a leap year. This produces wrong
+    ! results, example while 1700, 1900, 2100 are not leap years,
+    ! the above construct determines that these years are leap years.
+    ! Needs to be fixed.
+
+    IF ((MOD(iYear, 100) /= 0) .AND. (MOD(iYear, 4) == 0)) THEN
+      myVal = .TRUE.
+    ELSE IF (MOD(iYear, 400) == 0) THEN
+      myVal = .TRUE.
+    ELSE
+      myVal = .FALSE.
+    END IF
+
+    RETURN
+  END FUNCTION LeapYear
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   Y E A R  D A Y S
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Determines the days of the year.
+  !>
+  !> @details
+  !>   This function calculates the number of calendar days of a 
+  !>   Gregorian year (>= 1582).
+  !>
+  !> @param[in]
+  !>   iYear     The year (YYYY, integer, 1582 <= YYYY)
+  !>
+  !> @return
+  !>   myVal     The days of the year (365 or 366)
+  !>
+  !----------------------------------------------------------------
+  INTEGER FUNCTION YearDays(iYear) RESULT(myVal)
+
+    IMPLICIT NONE
+
+    INTEGER, INTENT(IN) :: iYear
+
+    !----- START CALCULATIONS -----
+
+    myVal = 365
+    IF (LeapYear(iYear)) myVal = 366
+
+    RETURN
+  END FUNCTION YearDays
+
+!================================================================================
+
+  !----------------------------------------------------------------
+  ! F U N C T I O N   M O N T H  D A Y S
+  !----------------------------------------------------------------
+  !>
+  !> @brief
+  !>   Determines the days in the month of the year.
+  !>
+  !> @details
+  !>   This function calculates the number of calendar days in a month
+  !>   of a Gregorian year (>= 1582). In case of an error, the value
+  !>   IMISSV (-999999) is returned.
+  !>
+  !> @param[in]
+  !>   iYear     The year (YYYY, integer, 1582 <= YYYY)
+  !> @param[in]
+  !>   iMonth    The month of the year (MM, integer, 1 <= MM <= 12)
+  !>
+  !> @return
+  !>   myVal     The days of the month
+  !>
+  !----------------------------------------------------------------
+  INTEGER FUNCTION MonthDays(iYear, iMonth) RESULT(myVal)
+
+    IMPLICIT NONE
+
+    ! Global variables
+    INTEGER, INTENT(IN) :: iYear, iMonth
+
+    ! Local variables
+    INTEGER :: leap, monLen(12, 2)
+
+    !----- START CALCULATIONS -----
+
+    IF ((iYear < 1582) .OR. (iMonth < 1) .OR. (iMonth > 12)) THEN
+      myVal = IMISSV
+
+      RETURN
+    END IF
+
+    ! Initialize lenghts of months:
+    monLen = RESHAPE((/ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,     &
+                        31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 /),  &
+                     (/ 12, 2 /))
+
+    leap = 1
+    IF (LeapYear(iYear)) leap = 2
+
+    myVal = monLen(iMonth, leap)
+
+    RETURN
+  END FUNCTION MonthDays
 
 !================================================================================
 
